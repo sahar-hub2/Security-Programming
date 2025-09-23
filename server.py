@@ -160,7 +160,7 @@ async def handle_ws(websocket, server_id):
 
                 if loc == "local":
                     deliver = {
-                        "type": "USER_DELIVER",
+                        "type": "MSG_DIRECT",
                         "from": src,
                         "to": dst,
                         "ts": now_ms(),
@@ -190,7 +190,7 @@ async def handle_ws(websocket, server_id):
                 text = payload["text"]
                 # Prepare delivery to all local users except sender
                 deliver_msg = {
-                    "type": "USER_DELIVER",
+                    "type": "MSG_BROADCAST",
                     "from": src,
                     "to": "*",
                     "ts": now_ms(),

@@ -119,7 +119,7 @@ async def run_client(user_id: str, server_url: str):
                         known_pubkeys.pop(removed_user, None)
                         print(f"[server] User {removed_user} has disconnected.")
                 
-                elif mtype == "USER_DELIVER":
+                elif mtype == "MSG_BROADCAST":
                     payload = msg.get("payload", {})
                     text = payload.get("text")
                     sender_uid = msg.get("from")
