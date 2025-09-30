@@ -43,7 +43,7 @@ python client.py --user Bob --server ws://127.0.0.1:8765
 git add .
 
 # Commit them
-git commit -m "Update  client, server, keys and update README"
+git commit -m "Describe your changes"
 
 # Push to GitHub
 git push origin main

@@ -21,7 +21,10 @@ async def run_client(user_id: str, server_url: str):
 
         async def sender():
             while True:
-                line = await asyncio.get_event_loop().run_in_executor(None, input)
+                try:
+                    line = await asyncio.get_event_loop().run_in_executor(None, input)
+                except (EOFError, KeyboardInterrupt):
+                    break
                 if line.startswith("/tell "):
                     parts = line.split(" ", 2)
                     if len(parts) < 3:
@@ -70,7 +73,8 @@ async def run_client(user_id: str, server_url: str):
                     }))
                     
         async def receiver():
-            async for raw in ws:
+            try:
+              async for raw in ws:
                 msg = json.loads(raw)
                 mtype = msg.get("type")
 
@@ -131,12 +135,20 @@ async def run_client(user_id: str, server_url: str):
                     payload = msg.get("payload", {})
                     users = payload.get("users", [])
                     print(f"Connected users: {', '.join(users)}")
-
-        await asyncio.gather(sender(), receiver())
+            except asyncio.CancelledError:
+                pass
+        try: 
+            await asyncio.gather(sender(), receiver())
+        except asyncio.CancelledError:
+                print("Client tasks cancelled, shutting down...")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--user", required=True)
     parser.add_argument("--server", required=True)
     args = parser.parse_args()
-    asyncio.run(run_client(args.user, args.server))
+
+    try:
+        asyncio.run(run_client(args.user, args.server))
+    except KeyboardInterrupt:
+        print("\nDisconnected. Goodbye!")
