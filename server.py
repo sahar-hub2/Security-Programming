@@ -5,18 +5,24 @@ SOCP-compatible server for secure chat.
 
 Responsibilities:
 - Manage WebSocket connections for local users
-- Advertise user public keys to all clients
+- Advertise user public keys to all clients (DER+base64url on the wire)
 - Deliver encrypted direct messages
-- Broadcast public messages
+- Broadcast public messages (local only; kept for system notices)
 - Handle user join/leave notifications
-- Sign all outbound payloads (transport-level integrity)
+- Sign all outbound payloads (transport-level integrity) with RSASSA-PSS
 
 Author: Your Group Name
 """
 
 import asyncio, json, argparse, time, websockets, uuid
 from websockets.server import serve
-from keys import b64url_encode, rsa_pss_sign, generate_rsa4096
+from keys import (
+    b64url_encode,
+    rsa_pss_sign,
+    generate_rsa4096,
+    public_pem_to_der_b64url,
+    der_b64url_to_public_pem,
+)
 from collections import deque
 
 # ---------------------------------------------------------------------------
@@ -62,7 +68,7 @@ server_pubkeys = {}   # map of other servers’ pubkeys (future federation use)
 # ---------------------------------------------------------------------------
 def sign_payload(payload: dict) -> str:
     """
-    Compute RSASSA-PSS signature over the canonical JSON representation
+    Compute RSASSA-PSS signature over canonical JSON representation
     (keys sorted). Returns base64url string with no padding.
     """
     payload_bytes = json.dumps(payload, sort_keys=True).encode()
@@ -140,10 +146,10 @@ async def handle_ws(websocket, server_id):
             # ================================================================
             if mtype == "USER_HELLO":
                 user_id = msg.get("from")
-                pubkey = msg.get("payload", {}).get("pubkey")
+                pubkey_b64u = msg.get("payload", {}).get("pubkey_b64u")
 
                 # --- Validate registration fields ----------------------------
-                if not user_id or not pubkey:
+                if not user_id or not pubkey_b64u:
                     error_msg = {
                         "type": "ERROR",
                         "from": server_id,
@@ -172,10 +178,13 @@ async def handle_ws(websocket, server_id):
                     await websocket.send(json.dumps(error_msg))
                     continue
 
+                # --- Convert wire key (DER+b64url) to PEM for internal use ---
+                pubkey_pem = der_b64url_to_public_pem(pubkey_b64u)
+
                 # --- Record local user ---------------------------------------
                 local_users[user_id] = websocket
                 user_locations[user_id] = "local"
-                user_pubkeys[user_id] = pubkey
+                user_pubkeys[user_id] = pubkey_pem.decode()
                 print(f"[{server_id}] User {user_id} connected locally.")
 
                 # --- Send server’s own pubkey FIRST (bootstrap TOFU) ----------
@@ -186,14 +195,18 @@ async def handle_ws(websocket, server_id):
                     "id": uuid.uuid4().hex,
                     "ts": now_ms(),
                     "relay": server_id,  # who signed transport
-                    "payload": {"user": server_id, "pubkey": pub_pem.decode()},
+                    "payload": {
+                        "user": server_id,
+                        "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
+                    },
                 }
                 server_advertise["sig"] = sign_payload(server_advertise["payload"])
                 await websocket.send(json.dumps(server_advertise))
 
                 # --- THEN send all existing users’ pubkeys to the new user ---
-                for uid, pk in user_pubkeys.items():
+                for uid, pk_pem_str in user_pubkeys.items():
                     if uid != user_id:
+                        pk_pem_bytes = pk_pem_str.encode() if isinstance(pk_pem_str, str) else pk_pem_str
                         advertise_msg = {
                             "type": "USER_ADVERTISE",
                             "from": server_id,
@@ -201,7 +214,10 @@ async def handle_ws(websocket, server_id):
                             "id": uuid.uuid4().hex,
                             "ts": now_ms(),
                             "relay": server_id,
-                            "payload": {"user": uid, "pubkey": pk},
+                            "payload": {
+                                "user": uid,
+                                "pubkey_b64u": public_pem_to_der_b64url(pk_pem_bytes),
+                            },
                         }
                         advertise_msg["sig"] = sign_payload(advertise_msg["payload"])
                         await websocket.send(json.dumps(advertise_msg))
@@ -214,7 +230,10 @@ async def handle_ws(websocket, server_id):
                     "id": uuid.uuid4().hex,
                     "ts": now_ms(),
                     "relay": server_id,
-                    "payload": {"user": user_id, "pubkey": pubkey},
+                    "payload": {
+                        "user": user_id,
+                        "pubkey_b64u": public_pem_to_der_b64url(pubkey_pem),
+                    },
                 }
                 advertise_msg["sig"] = sign_payload(advertise_msg["payload"])
                 for uid, ws in list(local_users.items()):
@@ -286,7 +305,8 @@ async def handle_ws(websocket, server_id):
                 continue
 
             # ================================================================
-            # 3. MSG_BROADCAST — public message to all users
+            # 3. MSG_BROADCAST — public message to all users (system use)
+            #    NOTE: Clients now implement E2EE fan-out for '/all'.
             # ================================================================
             elif mtype == "MSG_BROADCAST":
                 src = msg.get("from")
@@ -321,7 +341,7 @@ async def handle_ws(websocket, server_id):
                 src = msg.get("from")
                 if not src:
                     continue
-                users_list = list(local_users.keys())
+                users_list = sorted(list(local_users.keys()))
                 response = {
                     "type": "CMD_LIST_RESULT",
                     "from": server_id,

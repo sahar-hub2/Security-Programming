@@ -4,6 +4,7 @@
 # - RSA-4096 key management (persist or generate)
 # - RSA-OAEP (SHA-256) encryption/decryption
 # - RSASSA-PSS (SHA-256) signing/verification
+# - Public key wire format helpers (DER <-> PEM, base64url)
 
 import base64
 from pathlib import Path
@@ -13,8 +14,11 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
     load_pem_private_key,
     load_pem_public_key,
+    load_der_public_key,
 )
 
 # ----------------------------
@@ -90,7 +94,7 @@ def rsa_oaep_decrypt(priv_pem: bytes, ciphertext: bytes) -> bytes:
     return priv.decrypt(
         ciphertext,
         padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            mgf=padding.MGF1(hashes.SHA256()),
             algorithm=hashes.SHA256(),
             label=None,
         ),
@@ -122,3 +126,21 @@ def rsa_pss_verify(pub_pem: bytes, message: bytes, signature: bytes) -> bool:
         return False
     except Exception:
         return False
+
+# ----------------------------
+# Public key wire format helpers
+#   - JSON MUST carry keys as DER base64url (no padding)
+#   - Internally we still use PEM for cryptography calls
+# ----------------------------
+
+def public_pem_to_der_b64url(pub_pem: bytes) -> str:
+    """Convert PEM SubjectPublicKeyInfo -> DER, then base64url (no padding)."""
+    pub = load_pem_public_key(pub_pem)
+    der = pub.public_bytes(encoding=Encoding.DER, format=PublicFormat.SubjectPublicKeyInfo)
+    return b64url_encode(der)
+
+def der_b64url_to_public_pem(der_b64u: str) -> bytes:
+    """Convert base64url DER SubjectPublicKeyInfo -> PEM bytes."""
+    der = b64url_decode(der_b64u)
+    pub = load_der_public_key(der)
+    return pub.public_bytes(encoding=Encoding.PEM, format=PublicFormat.SubjectPublicKeyInfo)

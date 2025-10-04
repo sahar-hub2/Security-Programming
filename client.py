@@ -5,9 +5,9 @@ SOCP client for secure chat communication.
 
 Implements:
 - RSA-based end-to-end encryption (OAEP-SHA256)
-- RSASSA-PSS message signatures
+- RSASSA-PSS message signatures (SHA-256)
 - Base64url encoding (no padding)
-- Commands: /tell, /all, /list
+- Commands: /tell, /all (E2EE fan-out), /list
 - Handles USER_ADVERTISE, USER_REMOVE, MSG_DIRECT, MSG_BROADCAST
 
 Author: Your Group Name
@@ -22,6 +22,8 @@ from keys import (
     rsa_pss_verify,
     b64url_encode,
     b64url_decode,
+    public_pem_to_der_b64url,
+    der_b64url_to_public_pem,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,8 +76,8 @@ async def run_client(user_id: str, server_url: str):
             "to": "*",
             "id": uuid.uuid4().hex,
             "ts": now_ms(),
-            "payload": {"pubkey": pub_pem.decode()},
-        }) + "\n")
+            "payload": {"pubkey_b64u": public_pem_to_der_b64url(pub_pem)},
+        })+"\n")
         print(f"Connected to {server_url} as {user_id}")
 
         # -------------------------------------------------------------------
@@ -114,7 +116,7 @@ async def run_client(user_id: str, server_url: str):
                             "ciphertext": b64url_encode(ciphertext),
                             "signature":  b64url_encode(signature),
                         }
-                    }) + "\n")
+                    })+"\n")
 
                 # -------------------- List Connected Users (/list) ------------
                 elif line.strip() == "/list":
@@ -124,16 +126,17 @@ async def run_client(user_id: str, server_url: str):
                         "to": "*",
                         "id": uuid.uuid4().hex,
                         "ts": now_ms()
-                    })+ "\n")
+                    })+"\n")
 
                 # -------------------- Broadcast Message (/all) ----------------
+                # SOCP §1 & §4 require E2EE + signatures for user content.
+                # We implement fan-out: per-recipient MSG_DIRECT, each encrypted+signed.
                 elif line.startswith("/all "):
                     msg_text = line[len("/all "):]
-
-                    # Fan-out E2EE: send a direct, signed, encrypted message to each known user (except self)
                     targets = [uid for uid in known_pubkeys.keys() if uid != user_id]
                     if not targets:
-                        print("[all] No known recipients yet. Try again after /list or wait for advertisements.")
+                        print("[all] No known recipients yet; wait for advertisements or /list.")
+                        continue
                     for target in targets:
                         try:
                             ct = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
@@ -148,7 +151,7 @@ async def run_client(user_id: str, server_url: str):
                                     "ciphertext": b64url_encode(ct),
                                     "signature":  b64url_encode(sig),
                                 }
-                            }) + "\n")
+                            })+"\n")
                         except Exception as e:
                             print(f"[all] Failed to send to {target}: {e}")
 
@@ -168,21 +171,21 @@ async def run_client(user_id: str, server_url: str):
                     if mtype == "USER_ADVERTISE":
                         payload = msg.get("payload", {})
                         uid = payload.get("user")
-                        pubkey = payload.get("pubkey")
+                        pubkey_b64u = payload.get("pubkey_b64u")
                         relay = msg.get("relay") or msg.get("from")
-                        if not uid or not pubkey:
+                        if not uid or not pubkey_b64u:
                             continue
 
                         # Bootstrap TOFU: accept server's own key once
                         if relay not in known_pubkeys:
                             if uid == relay:
-                                known_pubkeys[uid] = pubkey.encode()
+                                known_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u)
                                 print(f"[bootstrap] learned SERVER pubkey for {uid}")
                                 # Process any buffered adverts now
                                 for pend in list(pending_advertises):
                                     if verify_transport_sig(pend, known_pubkeys):
                                         p = pend["payload"]
-                                        known_pubkeys[p["user"]] = p["pubkey"].encode()
+                                        known_pubkeys[p["user"]] = der_b64url_to_public_pem(p["pubkey_b64u"])
                                         print(f"[server] learned pubkey for {p['user']}")
                                 pending_advertises.clear()
                                 continue
@@ -195,7 +198,7 @@ async def run_client(user_id: str, server_url: str):
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature on USER_ADVERTISE.")
                             continue
-                        known_pubkeys[uid] = pubkey.encode()
+                        known_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u)
                         print(f"[server] learned pubkey for {uid}")
 
                     # ---------- Receive a direct encrypted message -----------
@@ -236,7 +239,7 @@ async def run_client(user_id: str, server_url: str):
                             known_pubkeys.pop(removed_user, None)
                             print(f"[server] User {removed_user} has disconnected.")
 
-                    # ---------- Handle broadcast messages --------------------
+                    # ---------- Handle broadcast messages (system notices) ----
                     elif mtype == "MSG_BROADCAST":
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature.")
