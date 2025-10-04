@@ -1,34 +1,78 @@
+# keys.py
+# Cryptography helpers for SOCP implementation
+# - Base64url encode/decode (no padding in JSON)
+# - RSA-4096 key management (persist or generate)
+# - RSA-OAEP (SHA-256) encryption/decryption
+# - RSASSA-PSS (SHA-256) signing/verification
+
 import base64
-from cryptography.hazmat.primitives.asymmetric import rsa, padding # SCOP 4.Cryptography
-from cryptography.hazmat.primitives import hashes, serialization  # SCOP 4.Cryptography
-from cryptography.exceptions import InvalidSignature  # SCOP 4.Cryptography
-from typing import Tuple
+from pathlib import Path
+from typing import Tuple, Union
 
-def b64url_encode(b: bytes) -> str:
-    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.serialization import (
+    load_pem_private_key,
+    load_pem_public_key,
+)
 
-def b64url_decode(s: str) -> bytes:
+# ----------------------------
+# Base64url (no padding in JSON)
+# ----------------------------
+
+def b64url_encode(data: Union[bytes, bytearray, memoryview]) -> str:
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("b64url_encode expects bytes-like input")
+    enc = base64.urlsafe_b64encode(bytes(data))
+    return enc.rstrip(b"=").decode("ascii")
+
+def b64url_decode(s: Union[str, bytes]) -> bytes:
+    if isinstance(s, bytes):
+        s = s.decode("ascii")
+    if not isinstance(s, str):
+        raise TypeError("b64url_decode expects str/bytes input")
     pad = "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s + pad)
 
+# ----------------------------
+# RSA key management (4096-bit)
+# ----------------------------
+
 def generate_rsa4096() -> Tuple[bytes, bytes]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
-    priv = key.private_bytes(
+    priv_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption()
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
     )
-    pub = key.public_key().public_bytes(
+    pub_pem = key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    return priv, pub
+    return priv_pem, pub_pem
+
+def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, bytes]:
+    """Persist a unique RSA keypair per user; create if missing."""
+    p = Path(keydir)
+    p.mkdir(parents=True, exist_ok=True)
+    priv_path, pub_path = p / f"{user_id}.priv.pem", p / f"{user_id}.pub.pem"
+    if priv_path.exists() and pub_path.exists():
+        return priv_path.read_bytes(), pub_path.read_bytes()
+    priv_pem, pub_pem = generate_rsa4096()
+    priv_path.write_bytes(priv_pem)
+    pub_path.write_bytes(pub_pem)
+    return priv_pem, pub_pem
 
 def load_private_pem(pem: bytes):
-    return serialization.load_pem_private_key(pem, password=None)
+    return load_pem_private_key(pem, password=None)
 
 def load_public_pem(pem: bytes):
-    return serialization.load_pem_public_key(pem)
+    return load_pem_public_key(pem)
+
+# ----------------------------
+# RSA-OAEP (SHA-256) crypto
+# ----------------------------
 
 def rsa_oaep_encrypt(pub_pem: bytes, plaintext: bytes) -> bytes:
     pub = load_public_pem(pub_pem)
@@ -37,8 +81,8 @@ def rsa_oaep_encrypt(pub_pem: bytes, plaintext: bytes) -> bytes:
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
-            label=None
-        )
+            label=None,
+        ),
     )
 
 def rsa_oaep_decrypt(priv_pem: bytes, ciphertext: bytes) -> bytes:
@@ -48,16 +92,20 @@ def rsa_oaep_decrypt(priv_pem: bytes, ciphertext: bytes) -> bytes:
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
-            label=None
-        )
+            label=None,
+        ),
     )
+
+# ----------------------------
+# RSASSA-PSS (SHA-256) signatures
+# ----------------------------
 
 def rsa_pss_sign(priv_pem: bytes, message: bytes) -> bytes:
     priv = load_private_pem(priv_pem)
     return priv.sign(
         message,
         padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-        hashes.SHA256()
+        hashes.SHA256(),
     )
 
 def rsa_pss_verify(pub_pem: bytes, message: bytes, signature: bytes) -> bool:
@@ -67,8 +115,10 @@ def rsa_pss_verify(pub_pem: bytes, message: bytes, signature: bytes) -> bool:
             signature,
             message,
             padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
+            hashes.SHA256(),
         )
         return True
     except InvalidSignature:
+        return False
+    except Exception:
         return False
