@@ -136,21 +136,33 @@ async def run_client(nickname: str, server_url: str):
                             continue
                         target = looked
 
-                    # Encrypt with recipient’s public key; sign ciphertext
+                    # Encrypt with recipient’s public key
                     ciphertext = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
-                    signature  = rsa_pss_sign(priv_pem, ciphertext)
 
-                    await ws.send(json.dumps({
+                    # Build payload
+                    payload = {
+                        "ciphertext": b64url_encode(ciphertext),
+                        "sender_pub": public_pem_to_der_b64url(pub_pem),
+                        "signature": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),  # sign ciphertext itself
+                    }
+
+                    # Add user's envelope signature (usig) over payload
+                    usig_bytes = rsa_pss_sign(priv_pem, json.dumps(payload, sort_keys=True).encode())
+                    usig_b64u = b64url_encode(usig_bytes)
+
+                    # Build final message frame
+                    msg = {
                         "type": "MSG_DIRECT",
-                        "from": proto_id,           # UUID v4 on wire
-                        "to": target,               # UUID v4
+                        "from": proto_id,
+                        "to": target,
                         "id": uuid.uuid4().hex,
                         "ts": now_ms(),
-                        "payload": {
-                            "ciphertext": b64url_encode(ciphertext),
-                            "signature":  b64url_encode(signature),
-                        }
-                    }))
+                        "payload": payload,
+                        "usig": usig_b64u,
+                    }
+
+                    await ws.send(json.dumps(msg))
+
 
                 # -------------------- List Connected Users (/list) ------------
                 elif line.strip() == "/list":
@@ -177,21 +189,31 @@ async def run_client(nickname: str, server_url: str):
                         continue
                     for target in targets:
                         try:
-                            ct = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
-                            sig = rsa_pss_sign(priv_pem, ct)
-                            await ws.send(json.dumps({
+                            ciphertext = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
+
+                            payload = {
+                                "ciphertext": b64url_encode(ciphertext),
+                                "sender_pub": public_pem_to_der_b64url(pub_pem),
+                                "signature": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),
+                            }
+
+                            usig_bytes = rsa_pss_sign(priv_pem, json.dumps(payload, sort_keys=True).encode())
+                            usig_b64u = b64url_encode(usig_bytes)
+
+                            msg = {
                                 "type": "MSG_DIRECT",
                                 "from": proto_id,
                                 "to": target,
                                 "id": uuid.uuid4().hex,
                                 "ts": now_ms(),
-                                "payload": {
-                                    "ciphertext": b64url_encode(ct),
-                                    "signature":  b64url_encode(sig),
-                                }
-                            }))
+                                "payload": payload,
+                                "usig": usig_b64u,
+                            }
+
+                            await ws.send(json.dumps(msg))
                         except Exception as e:
                             print(f"[all] Failed to send to {display(target)}: {e}")
+
 
         # -------------------------------------------------------------------
         # Inner coroutine: handles incoming messages (receive -> display)
@@ -311,6 +333,42 @@ async def run_client(nickname: str, server_url: str):
                         # Display friendly list
                         pretty = ", ".join([display(uid) for uid in users]) if users else "(none)"
                         print(f"Connected users: {pretty}")
+                    
+                    elif mtype == "USER_DELIVER":
+                        if not verify_transport_sig(msg, known_pubkeys):
+                            print("[SECURITY] Invalid server transport signature on USER_DELIVER.")
+                            continue
+
+                        payload = msg.get("payload", {})
+                        ciphertext_b64u = payload.get("ciphertext")
+                        sender_uid = payload.get("sender")
+                        sender_pub_b64u = payload.get("sender_pub")
+                        content_sig_b64u = payload.get("content_sig")
+
+                        if not ciphertext_b64u or not sender_uid or not sender_pub_b64u or not content_sig_b64u:
+                            print("[recv] Malformed USER_DELIVER payload")
+                            continue
+
+                        try:
+                            ciphertext = b64url_decode(ciphertext_b64u)
+                            plaintext = rsa_oaep_decrypt(priv_pem, ciphertext).decode()
+
+                            # Verify end-to-end signature
+                            sender_pub_pem = der_b64url_to_public_pem(sender_pub_b64u)
+                            sig_ok = rsa_pss_verify(sender_pub_pem, ciphertext, b64url_decode(content_sig_b64u))
+
+                            if not sig_ok:
+                                print(f"[SECURITY] Invalid content signature from {sender_uid}")
+                                continue
+
+                            # Remember the sender’s key if not already stored
+                            if sender_uid not in known_pubkeys:
+                                known_pubkeys[sender_uid] = sender_pub_pem
+
+                            print(f"{display(sender_uid)}: {plaintext}")
+
+                        except Exception as e:
+                            print(f"[recv] Failed to process USER_DELIVER: {e}")
 
             except asyncio.CancelledError:
                 pass
