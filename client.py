@@ -75,7 +75,7 @@ async def run_client(user_id: str, server_url: str):
             "id": uuid.uuid4().hex,
             "ts": now_ms(),
             "payload": {"pubkey": pub_pem.decode()},
-        }))
+        }) + "\n")
         print(f"Connected to {server_url} as {user_id}")
 
         # -------------------------------------------------------------------
@@ -114,7 +114,7 @@ async def run_client(user_id: str, server_url: str):
                             "ciphertext": b64url_encode(ciphertext),
                             "signature":  b64url_encode(signature),
                         }
-                    }))
+                    }) + "\n")
 
                 # -------------------- List Connected Users (/list) ------------
                 elif line.strip() == "/list":
@@ -124,19 +124,33 @@ async def run_client(user_id: str, server_url: str):
                         "to": "*",
                         "id": uuid.uuid4().hex,
                         "ts": now_ms()
-                    }))
+                    })+ "\n")
 
                 # -------------------- Broadcast Message (/all) ----------------
                 elif line.startswith("/all "):
                     msg_text = line[len("/all "):]
-                    await ws.send(json.dumps({
-                        "type": "MSG_BROADCAST",
-                        "from": user_id,
-                        "to": "*",
-                        "id": uuid.uuid4().hex,
-                        "ts": now_ms(),
-                        "payload": {"text": msg_text}
-                    }))
+
+                    # Fan-out E2EE: send a direct, signed, encrypted message to each known user (except self)
+                    targets = [uid for uid in known_pubkeys.keys() if uid != user_id]
+                    if not targets:
+                        print("[all] No known recipients yet. Try again after /list or wait for advertisements.")
+                    for target in targets:
+                        try:
+                            ct = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
+                            sig = rsa_pss_sign(priv_pem, ct)
+                            await ws.send(json.dumps({
+                                "type": "MSG_DIRECT",
+                                "from": user_id,
+                                "to": target,
+                                "id": uuid.uuid4().hex,
+                                "ts": now_ms(),
+                                "payload": {
+                                    "ciphertext": b64url_encode(ct),
+                                    "signature":  b64url_encode(sig),
+                                }
+                            }) + "\n")
+                        except Exception as e:
+                            print(f"[all] Failed to send to {target}: {e}")
 
         # -------------------------------------------------------------------
         # Inner coroutine: handles incoming messages (receive -> display)
