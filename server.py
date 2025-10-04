@@ -10,20 +10,24 @@ Responsibilities:
 - Broadcast public messages (local only; kept for system notices)
 - Handle user join/leave notifications
 - Sign all outbound payloads (transport-level integrity) with RSASSA-PSS
+- Include human-friendly names in adverts and /list for better UX
 
 Author: Your Group Name
 """
 
 import asyncio, json, argparse, time, websockets, uuid
 from websockets.server import serve
+from collections import deque
+
 from keys import (
     b64url_encode,
     rsa_pss_sign,
     generate_rsa4096,
     public_pem_to_der_b64url,
     der_b64url_to_public_pem,
+    load_or_create_server_uuid,
+    is_uuid_v4,
 )
-from collections import deque
 
 # ---------------------------------------------------------------------------
 # Freshness / dedup helpers
@@ -53,12 +57,13 @@ def seen_before(mid: str) -> bool:
 # ---------------------------------------------------------------------------
 servers = {}          # server_id -> websocket (reserved for federation)
 server_addrs = {}     # server_id -> (host, port, pubkey_pem)
-local_users = {}      # user_id -> websocket (connected locally)
-user_locations = {}   # user_id -> "local" or server_id (federated)
-user_pubkeys = {}     # user_id -> public key PEM string
+local_users = {}      # user_uuid -> websocket (connected locally)
+user_locations = {}   # user_uuid -> "local" or server_id (federated)
+user_pubkeys = {}     # user_uuid -> public key PEM string
+user_names = {}       # user_uuid -> human-friendly name (optional)
 
 # ---------------------------------------------------------------------------
-# Server identity (ephemeral RSA-4096)
+# Server identity (ephemeral RSA-4096 for transport signing)
 # ---------------------------------------------------------------------------
 priv_pem, pub_pem = generate_rsa4096()
 server_pubkeys = {}   # map of other servers’ pubkeys (future federation use)
@@ -77,7 +82,7 @@ def sign_payload(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 # Main per-connection handler
 # ---------------------------------------------------------------------------
-async def handle_ws(websocket, server_id):
+async def handle_ws(websocket, server_id: str, server_name: str):
     """
     Handle a single WebSocket connection from a local user.
     Performs registration, message routing, and cleanup on disconnect.
@@ -142,14 +147,16 @@ async def handle_ws(websocket, server_id):
             mtype = msg.get("type")
 
             # ================================================================
-            # 1. USER_HELLO — client registration
+            # 1. USER_HELLO — client registration (user_id MUST be UUID v4)
             # ================================================================
             if mtype == "USER_HELLO":
                 user_id = msg.get("from")
-                pubkey_b64u = msg.get("payload", {}).get("pubkey_b64u")
+                payload = msg.get("payload", {}) or {}
+                pubkey_b64u = payload.get("pubkey_b64u")
+                name = payload.get("name")  # optional nickname for UX
 
                 # --- Validate registration fields ----------------------------
-                if not user_id or not pubkey_b64u:
+                if not user_id or not pubkey_b64u or not is_uuid_v4(user_id):
                     error_msg = {
                         "type": "ERROR",
                         "from": server_id,
@@ -157,13 +164,13 @@ async def handle_ws(websocket, server_id):
                         "id": uuid.uuid4().hex,
                         "ts": now_ms(),
                         "relay": server_id,
-                        "payload": {"code": "MISSING_USER_ID_OR_PUBKEY"},
+                        "payload": {"code": "MISSING_OR_INVALID_USER_ID_OR_PUBKEY"},
                     }
                     error_msg["sig"] = sign_payload(error_msg["payload"])
                     await websocket.send(json.dumps(error_msg))
                     continue
 
-                # --- Enforce unique username ---------------------------------
+                # --- Enforce unique UUID -------------------------------------
                 if user_id in local_users:
                     error_msg = {
                         "type": "ERROR",
@@ -185,7 +192,8 @@ async def handle_ws(websocket, server_id):
                 local_users[user_id] = websocket
                 user_locations[user_id] = "local"
                 user_pubkeys[user_id] = pubkey_pem.decode()
-                print(f"[{server_id}] User {user_id} connected locally.")
+                user_names[user_id] = name or user_id  # fallback to UUID if no name
+                print(f"[{server_id}] User {user_names[user_id]} ({user_id}) connected locally.")
 
                 # --- Send server’s own pubkey FIRST (bootstrap TOFU) ----------
                 server_advertise = {
@@ -197,6 +205,7 @@ async def handle_ws(websocket, server_id):
                     "relay": server_id,  # who signed transport
                     "payload": {
                         "user": server_id,
+                        "name": server_name,
                         "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
                     },
                 }
@@ -216,6 +225,7 @@ async def handle_ws(websocket, server_id):
                             "relay": server_id,
                             "payload": {
                                 "user": uid,
+                                "name": user_names.get(uid, uid),
                                 "pubkey_b64u": public_pem_to_der_b64url(pk_pem_bytes),
                             },
                         }
@@ -232,6 +242,7 @@ async def handle_ws(websocket, server_id):
                     "relay": server_id,
                     "payload": {
                         "user": user_id,
+                        "name": user_names.get(user_id, user_id),
                         "pubkey_b64u": public_pem_to_der_b64url(pubkey_pem),
                     },
                 }
@@ -245,7 +256,7 @@ async def handle_ws(websocket, server_id):
                 continue
 
             # ================================================================
-            # 2. MSG_DIRECT — encrypted private message
+            # 2. MSG_DIRECT — encrypted private message (UUID v4 src/dst)
             # ================================================================
             elif mtype == "MSG_DIRECT":
                 src = msg.get("from")
@@ -253,7 +264,7 @@ async def handle_ws(websocket, server_id):
                 payload = msg.get("payload")
 
                 # --- Validate mandatory fields -------------------------------
-                if not src or not dst:
+                if not src or not dst or not is_uuid_v4(src) or not is_uuid_v4(dst):
                     error_msg = {
                         "type": "ERROR",
                         "from": server_id,
@@ -261,7 +272,7 @@ async def handle_ws(websocket, server_id):
                         "id": uuid.uuid4().hex,
                         "ts": now_ms(),
                         "relay": server_id,
-                        "payload": {"code": "MISSING_FIELDS"},
+                        "payload": {"code": "INVALID_SRC_OR_DST_UUID"},
                     }
                     error_msg["sig"] = sign_payload(error_msg["payload"])
                     await websocket.send(json.dumps(error_msg))
@@ -287,7 +298,7 @@ async def handle_ws(websocket, server_id):
                 if loc == "local":
                     deliver = {
                         "type": "MSG_DIRECT",
-                        "from": src,          # sender user id
+                        "from": src,          # sender user id (UUID v4)
                         "to": dst,
                         "id": mid,            # keep original client id
                         "ts": now_ms(),
@@ -299,7 +310,7 @@ async def handle_ws(websocket, server_id):
                     if target_ws:
                         try:
                             await target_ws.send(json.dumps(deliver))
-                            print(f"[{server_id}] Delivered message from {src} -> {dst}")
+                            print(f"[{server_id}] Delivered {user_names.get(src, src)} -> {user_names.get(dst, dst)}")
                         except Exception as e:
                             print(f"[{server_id}] Delivery to {dst} failed: {e}")
                 continue
@@ -332,7 +343,7 @@ async def handle_ws(websocket, server_id):
                             await ws.send(json.dumps(deliver_msg))
                         except Exception as e:
                             print(f"[{server_id}] Broadcast delivery to {uid} failed: {e}")
-                print(f"[{server_id}] Broadcast from {src}: {text}")
+                print(f"[{server_id}] Broadcast from {user_names.get(src, src)}: {text}")
 
             # ================================================================
             # 4. CMD_LIST — respond with currently connected users
@@ -342,6 +353,7 @@ async def handle_ws(websocket, server_id):
                 if not src:
                     continue
                 users_list = sorted(list(local_users.keys()))
+                names_map = {uid: user_names.get(uid, uid) for uid in users_list}
                 response = {
                     "type": "CMD_LIST_RESULT",
                     "from": server_id,
@@ -349,7 +361,10 @@ async def handle_ws(websocket, server_id):
                     "id": uuid.uuid4().hex,
                     "ts": now_ms(),
                     "relay": server_id,
-                    "payload": {"users": users_list},
+                    "payload": {
+                        "users": users_list,   # keep old field for compatibility
+                        "names": names_map,    # new map uuid -> display name
+                    },
                 }
                 response["sig"] = sign_payload(response["payload"])
                 try:
@@ -377,6 +392,7 @@ async def handle_ws(websocket, server_id):
             local_users.pop(user_id, None)
             user_locations.pop(user_id, None)
             user_pubkeys.pop(user_id, None)
+            user_names.pop(user_id, None)
             print(f"[{server_id}] User {user_id} disconnected and cleaned up.")
 
             remove_msg = {
@@ -398,18 +414,19 @@ async def handle_ws(websocket, server_id):
 # ---------------------------------------------------------------------------
 # Main server loop
 # ---------------------------------------------------------------------------
-async def main_loop(my_id, host, port):
+async def main_loop(server_uuid: str, host: str, port: int, server_name: str):
     """Create WebSocket server and run indefinitely."""
-    server_pubkeys[my_id] = pub_pem.decode()
+    # self-advertise (for future federation)
+    server_pubkeys[server_uuid] = pub_pem.decode()
 
     async def ws_handler(ws):
-        await handle_ws(ws, my_id)
+        await handle_ws(ws, server_uuid, server_name)
 
-    print(f"[{my_id}] About to bind ws://{host}:{port}")
+    print(f"[{server_uuid}] About to bind ws://{host}:{port} (name={server_name})")
 
     # v15 pattern: async context + wait forever
     async with serve(ws_handler, host, port, ping_interval=15, ping_timeout=45):
-        print(f"[{my_id}] Listening on ws://{host}:{port}")
+        print(f"[{server_uuid}] Listening on ws://{host}:{port}")
         await asyncio.Future()  # keep running forever
 
 # ------------------------------------------------------------
@@ -417,13 +434,20 @@ async def main_loop(my_id, host, port):
 # ------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SOCP Secure Chat Server")
-    parser.add_argument("--id", required=True, help="Server ID (UUID or name)")
+    parser.add_argument("--id", required=False, help="Server ID (UUID v4 preferred)")
+    parser.add_argument("--name", required=False, help="Human-friendly server name for UX")
     parser.add_argument("--host", default="127.0.0.1", help="Hostname or IP to bind")
     parser.add_argument("--port", default=8765, type=int, help="TCP port to listen on")
     args = parser.parse_args()
 
+    # Ensure server UUID v4 (persisted). If --id is a valid v4, use it; else reuse/create one.
+    server_uuid = load_or_create_server_uuid(args.id)
+
+    # Choose a display name (for adverts). Default to first 8 chars of UUID.
+    server_name = args.name or f"server-{server_uuid[:8]}"
+
     try:
-        asyncio.run(main_loop(args.id, args.host, args.port))
+        asyncio.run(main_loop(server_uuid, args.host, args.port, server_name))
     except KeyboardInterrupt:
         print("\nServer shutting down gracefully...")
     except Exception as e:

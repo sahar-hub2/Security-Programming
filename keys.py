@@ -144,3 +144,48 @@ def der_b64url_to_public_pem(der_b64u: str) -> bytes:
     der = b64url_decode(der_b64u)
     pub = load_der_public_key(der)
     return pub.public_bytes(encoding=Encoding.PEM, format=PublicFormat.SubjectPublicKeyInfo)
+
+
+# ----------------------------
+# UUID helpers (persisted)
+# ----------------------------
+import uuid
+
+def is_uuid_v4(s: str) -> bool:
+    try:
+        u = uuid.UUID(s, version=4)
+        return str(u) == s.lower()
+    except Exception:
+        return False
+
+def load_or_create_user_uuid(nickname: str, keydir: str = ".keys") -> str:
+    """
+    Map a human nickname to a stable UUID v4 for on-wire identity.
+    Persists mapping at .keys/<nickname>.uuid
+    """
+    p = Path(keydir)
+    p.mkdir(parents=True, exist_ok=True)
+    f = p / f"{nickname}.uuid"
+    if f.exists():
+        return f.read_text().strip()
+    new_id = str(uuid.uuid4())
+    f.write_text(new_id)
+    return new_id
+
+def load_or_create_server_uuid(preferred: str | None = None, keydir: str = ".keys") -> str:
+    """
+    Ensure the server has a stable UUID v4.
+    If 'preferred' is a valid UUID v4, use it and persist; otherwise create one.
+    Persists at .keys/server.uuid
+    """
+    p = Path(keydir)
+    p.mkdir(parents=True, exist_ok=True)
+    f = p / "server.uuid"
+    if preferred and is_uuid_v4(preferred):
+        f.write_text(preferred.lower())
+        return preferred.lower()
+    if f.exists():
+        return f.read_text().strip()
+    sid = str(uuid.uuid4())
+    f.write_text(sid)
+    return sid
