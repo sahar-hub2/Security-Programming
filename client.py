@@ -100,7 +100,7 @@ async def run_client(nickname: str, server_url: str):
                 "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
                 "name": nickname,  # human-friendly name for UX
             },
-        }) + "\n")
+        }))
         print(f"Connected to {server_url} as {nickname} (id={proto_id})")
 
         # -------------------------------------------------------------------
@@ -150,7 +150,7 @@ async def run_client(nickname: str, server_url: str):
                             "ciphertext": b64url_encode(ciphertext),
                             "signature":  b64url_encode(signature),
                         }
-                    }) + "\n")
+                    }))
 
                 # -------------------- List Connected Users (/list) ------------
                 elif line.strip() == "/list":
@@ -160,7 +160,11 @@ async def run_client(nickname: str, server_url: str):
                         "to": "*",
                         "id": uuid.uuid4().hex,
                         "ts": now_ms()
-                    }) + "\n")
+                    }))
+                
+                elif line.strip() == "/quit":
+                    await ws.close(code=1000, reason="Client requested")
+                    return
 
                 # -------------------- Broadcast Message (/all) ----------------
                 # SOCP §1 & §4 require E2EE + signatures for user content.
@@ -185,7 +189,7 @@ async def run_client(nickname: str, server_url: str):
                                     "ciphertext": b64url_encode(ct),
                                     "signature":  b64url_encode(sig),
                                 }
-                            }) + "\n")
+                            }))
                         except Exception as e:
                             print(f"[all] Failed to send to {display(target)}: {e}")
 

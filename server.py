@@ -11,6 +11,7 @@ Responsibilities:
 - Handle user join/leave notifications
 - Sign all outbound payloads (transport-level integrity) with RSASSA-PSS
 - Include human-friendly names in adverts and /list for better UX
+- §7 JSON Envelope: verify 'usig' on user content (MSG_DIRECT)
 
 Author: Your Group Name
 """
@@ -22,6 +23,8 @@ from collections import deque
 from keys import (
     b64url_encode,
     rsa_pss_sign,
+    rsa_pss_verify,
+    b64url_decode,
     generate_rsa4096,
     public_pem_to_der_b64url,
     der_b64url_to_public_pem,
@@ -257,13 +260,14 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
             # ================================================================
             # 2. MSG_DIRECT — encrypted private message (UUID v4 src/dst)
+            #    §7: verify user envelope signature 'usig' over canonical payload
             # ================================================================
             elif mtype == "MSG_DIRECT":
                 src = msg.get("from")
                 dst = msg.get("to")
-                payload = msg.get("payload")
+                payload = msg.get("payload", {}) or {}
 
-                # --- Validate mandatory fields -------------------------------
+                # --- Validate mandatory fields & UUID shape -------------------
                 if not src or not dst or not is_uuid_v4(src) or not is_uuid_v4(dst):
                     error_msg = {
                         "type": "ERROR",
@@ -273,6 +277,52 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "ts": now_ms(),
                         "relay": server_id,
                         "payload": {"code": "INVALID_SRC_OR_DST_UUID"},
+                    }
+                    error_msg["sig"] = sign_payload(error_msg["payload"])
+                    await websocket.send(json.dumps(error_msg))
+                    continue
+
+                # --- Verify user's envelope signature (usig) ------------------
+                usig_b64u = msg.get("usig")
+                if not usig_b64u:
+                    error_msg = {
+                        "type": "ERROR",
+                        "from": server_id,
+                        "to": src or "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"code": "MISSING_USER_SIG"},
+                    }
+                    error_msg["sig"] = sign_payload(error_msg["payload"])
+                    await websocket.send(json.dumps(error_msg))
+                    continue
+
+                sender_pub_pem_str = user_pubkeys.get(src)
+                if not sender_pub_pem_str:
+                    error_msg = {
+                        "type": "ERROR",
+                        "from": server_id,
+                        "to": src or "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"code": "UNKNOWN_SENDER"},
+                    }
+                    error_msg["sig"] = sign_payload(error_msg["payload"])
+                    await websocket.send(json.dumps(error_msg))
+                    continue
+
+                payload_bytes = json.dumps(payload, sort_keys=True).encode()
+                if not rsa_pss_verify(sender_pub_pem_str.encode(), payload_bytes, b64url_decode(usig_b64u)):
+                    error_msg = {
+                        "type": "ERROR",
+                        "from": server_id,
+                        "to": src or "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"code": "BAD_USER_SIG"},
                     }
                     error_msg["sig"] = sign_payload(error_msg["payload"])
                     await websocket.send(json.dumps(error_msg))
@@ -303,7 +353,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "id": mid,            # keep original client id
                         "ts": now_ms(),
                         "relay": server_id,   # transport signer
-                        "payload": payload,
+                        "payload": payload,   # unchanged; receiver verifies inner signature
+                        "usig": usig_b64u,    # (optional) forward user envelope sig for auditing
                     }
                     deliver["sig"] = sign_payload(deliver["payload"])
                     target_ws = local_users.get(dst)
@@ -321,8 +372,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
             # ================================================================
             elif mtype == "MSG_BROADCAST":
                 src = msg.get("from")
-                payload = msg.get("payload")
-                if not src or not payload or "text" not in payload:
+                payload = msg.get("payload", {}) or {}
+                if not src or "text" not in payload:
                     continue
 
                 text = payload["text"]
@@ -338,7 +389,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 deliver_msg["sig"] = sign_payload(deliver_msg["payload"])
 
                 for uid, ws in list(local_users.items()):
-                    if uid != src:
+                    if ws != websocket and uid != src:
                         try:
                             await ws.send(json.dumps(deliver_msg))
                         except Exception as e:
@@ -362,8 +413,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "ts": now_ms(),
                     "relay": server_id,
                     "payload": {
-                        "users": users_list,   # keep old field for compatibility
-                        "names": names_map,    # new map uuid -> display name
+                        "users": users_list,
+                        "names": names_map,   # map uuid -> display name
                     },
                 }
                 response["sig"] = sign_payload(response["payload"])
@@ -374,7 +425,34 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 continue
 
             # ================================================================
-            # 5. Unknown or unsupported message type
+            # 5. CTRL_CLOSE — application-level heartbeat (spec §8.4)
+            # ================================================================
+            elif mtype == "CTRL_CLOSE":
+                src = msg.get("from")
+                if not src:
+                    continue
+                ack = {
+                    "type": "CTRL_CLOSE_ACK",
+                    "from": server_id,
+                    "to": src,
+                    "id": uuid.uuid4().hex,
+                    "ts": now_ms(),
+                    "relay": server_id,
+                    "payload": {
+                        "echo_id": mid,          # client message id we’re acknowledging
+                        "server_ts": now_ms(),   # server’s current time (ms)
+                        "note": "app-heartbeat",
+                    },
+                }
+                ack["sig"] = sign_payload(ack["payload"])
+                try:
+                    await websocket.send(json.dumps(ack))
+                except Exception as e:
+                    print(f"[{server_id}] Failed to send CTRL_CLOSE_ACK to {src}: {e}")
+                continue
+
+            # ================================================================
+            # 6. Unknown or unsupported message type
             # ================================================================
             else:
                 print(f"[{server_id}] Unknown msg type: {mtype}")
