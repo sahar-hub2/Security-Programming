@@ -930,11 +930,15 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
                 if user_locations.get(uid) == origin_sid:
                     user_locations.pop(uid, None)
+                    user_pubkeys.pop(uid, None)   # ✅
+                    user_names.pop(uid, None)     # ✅
                     print(f"[gossip] Removed user {uid} from server {origin_sid}")
 
                 # Forward to others
                 for sid, link in list(servers.items()):
                     if link == websocket:
+                        continue
+                    if not is_open(link):          
                         continue
                     try:
                         await link.send(json.dumps(msg))
@@ -1101,17 +1105,19 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 "from": server_id,
                 "to": "*",
                 "ts": now_ms(),
+                "id": uuid.uuid4().hex, 
                 "payload": gossip_payload,
             }
             gossip_msg["sig"] = sign_payload(gossip_payload)
 
             for sid, link in list(servers.items()):
-                if link and link.open:
-                    try:
-                        await link.send(json.dumps(gossip_msg))
-                        print(f"[{server_id}] Gossiped USER_REMOVE for {user_id} to {sid}")
-                    except Exception as e:
-                        print(f"[{server_id}] Gossip remove failed to {sid}: {e}")
+                if not is_open(link):           # ✅ version-safe
+                    continue
+                try:
+                    await link.send(json.dumps(gossip_msg))
+                    print(f"[{server_id}] Gossiped USER_REMOVE for {user_id} to {sid}")
+                except Exception as e:
+                    print(f"[{server_id}] Gossip remove failed to {sid}: {e}")
 
 async def connect_to_known_servers(my_id, host, port):
     for sid, (h, p, pk_b64u) in server_addrs.items():
