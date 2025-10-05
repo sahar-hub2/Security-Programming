@@ -111,7 +111,7 @@ def build_server_hello_join(my_id, host, port, pubkey_b64u):
     return {
         "type": "SERVER_HELLO_JOIN",
         "from": my_id,
-        "id": my_id,
+        "id": uuid.uuid4().hex,
         "to": f"{host}:{port}",
         "ts": now_ms(),
         "payload": {
@@ -126,7 +126,7 @@ def build_server_announce(my_id, host, port, pubkey_b64u):
     return {
         "type": "SERVER_ANNOUNCE",
         "from": my_id,
-        "id": my_id,
+        "id": uuid.uuid4().hex,
         "to": "*",
         "ts": now_ms(),
         "payload": {
@@ -219,7 +219,6 @@ async def bootstrap_with_introducer(my_id, host, port, pubkey_b64u):
 
 
 async def handle_ws(websocket, server_id: str, server_name: str):
-    global pub_pem
     print(f"[{server_id}] New connection received.")
     """
     Handle a single WebSocket connection from a local user.
@@ -545,7 +544,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     deliver_msg = {
                         "type": "SERVER_DELIVER",
                         "from": server_id,          # my server ID
-                        "id": server_id,          # my server ID
+                        "id": uuid.uuid4().hex,
                         "to": target_sid,           # recipient’s server
                         "ts": now_ms(),
                         "payload": deliver_payload,
@@ -707,8 +706,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "ts": now_ms(),
                         "relay": server_id,
                         "payload": {
-                            "user": new_sid,  # the peer server’s UUID
-                            "name": f"server-{new_sid[:8]}",
+                            "user": assigned_id,  # the peer server’s UUID
+                            "name": f"server-{assigned_id[:8]}",
                             "pubkey_b64u": pubkey_b64u,
                         },
                     }
@@ -717,7 +716,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     for luid, ws in list(local_users.items()):
                         try:
                             await ws.send(json.dumps(advertise_peer))
-                            print(f"[announce] Sent USER_ADVERTISE (server peer {new_sid}) to local client {luid}")
+                            print(f"[announce] Sent USER_ADVERTISE (server peer {assigned_id}) to local client {luid}")
                         except Exception:
                             pass
 
@@ -815,7 +814,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "ts": now_ms(),
                         "relay": server_id,
                         "payload": {
-                            "user": new_sid,  # the peer server’s UUID
+                            "user": new_sid,
                             "name": f"server-{new_sid[:8]}",
                             "pubkey_b64u": pubkey_b64u,
                         },
@@ -850,8 +849,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not sig_b64u or origin_sid not in server_addrs:
                     return
                 pubkey_b64u = server_addrs[origin_sid][2]
-                pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
                     print(f"[gossip] BAD SIGNATURE in USER_ADVERTISE from {origin_sid}")
                     return
 
@@ -862,8 +861,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 # --- Store the remote user's public key, if provided ---
                 if "pubkey" in payload and payload["pubkey"]:
                     try:
-                        pub_pem = der_b64url_to_public_pem(payload["pubkey"])
-                        user_pubkeys[uid] = pub_pem.decode()
+                        user_pub_pem = der_b64url_to_public_pem(payload["pubkey"])
+                        user_pubkeys[uid] = user_pub_pem.decode()
                         print(f"[gossip] Stored pubkey for remote user {uid}")
                     except Exception as e:
                         print(f"[gossip] Failed to decode pubkey for {uid}: {e}")
@@ -888,10 +887,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "payload": advertise_payload,
                 }
 
-                # Sign with this server’s private key
-                local_advert["sig"] = b64url_encode(
-                    rsa_pss_sign(server_priv_pem, json.dumps(advertise_payload, sort_keys=True).encode())
-                )
+               # Sign with this server’s transport key (canonical signing helper)
+                local_advert["sig"] = sign_payload(advertise_payload)
 
                 # Send to all local clients
                 for luid, ws in list(local_users.items()):
@@ -925,8 +922,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not sig_b64u or origin_sid not in server_addrs:
                     return
                 pubkey_b64u = server_addrs[origin_sid][2]
-                pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
                     print(f"[gossip] BAD SIGNATURE in USER_REMOVE from {origin_sid}")
                     return
 
@@ -958,13 +955,13 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     return
 
                 pubkey_b64u = server_addrs[origin_sid][2]
-                pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
                     print(f"[{server_id}] BAD SIG on SERVER_DELIVER from {origin_sid}")
                     return
                 print(f"user locations: {user_locations}")
                 # If recipient is local, deliver to them as USER_DELIVER
-                if user_locations.get(recipient) == server_id:
+                if user_locations.get(recipient) == "local":
                     print(f"user found locally [{recipient}]")
                     user_ws = local_users.get(recipient)
                     if user_ws:
@@ -991,7 +988,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     print(f"user message forwarding [{recipient}]")
                     # Recipient not here — forward again if possible
                     target_sid = user_locations.get(recipient)
-                    if target_sid and target_sid in servers and servers[target_sid].open:
+                    if target_sid and target_sid in servers and is_open(servers[target_sid]):
                         try:
                             await servers[target_sid].send(json.dumps(msg))
                             print(f"[{server_id}] Forwarded SERVER_DELIVER for {recipient} to {target_sid}")
@@ -1011,9 +1008,9 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     return
 
                 pubkey_b64u = server_addrs[origin_sid][2]
-                pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
                 if not rsa_pss_verify(
-                    pub_pem,
+                    origin_srv_pub_pem,
                     json.dumps(payload, sort_keys=True).encode(),
                     b64url_decode(sig_b64u),
                 ):
