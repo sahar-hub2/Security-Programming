@@ -319,12 +319,13 @@ async def run_client(nickname: str, server_url: str):
                             continue
                         payload = msg.get("payload", {})
                         removed_user = payload.get("user")
+                        nm  = payload.get("name")
                         if removed_user:
                             known_pubkeys.pop(removed_user, None)
                             n = id_to_name.pop(removed_user, None)
                             if n:
                                 name_index.pop(n.lower(), None)
-                            print(f"[server] User {removed_user} has disconnected.")
+                            print(f"[server] User {nm} ({removed_user}) has disconnected.")
 
                     # ---------- Handle broadcast messages (system notices) ----
                     elif mtype == "MSG_BROADCAST":

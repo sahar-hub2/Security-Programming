@@ -924,15 +924,139 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     return
                 pubkey_b64u = server_addrs[origin_sid][2]
                 origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                if not rsa_pss_verify(
+                    origin_srv_pub_pem,
+                    json.dumps(payload, sort_keys=True).encode(),
+                    b64url_decode(sig_b64u),
+                ):
                     print(f"[gossip] BAD SIGNATURE in USER_REMOVE from {origin_sid}")
                     return
 
+                # --- Single removal + mark changed ---
+                removed_name = user_names.get(uid, uid)  # keep for UX/logs
+                changed = False
                 if user_locations.get(uid) == origin_sid:
                     user_locations.pop(uid, None)
-                    user_pubkeys.pop(uid, None)   # ✅
-                    user_names.pop(uid, None)     # ✅
+                    user_pubkeys.pop(uid, None)
+                    user_names.pop(uid, None)
+                    changed = True
                     print(f"[gossip] Removed user {uid} from server {origin_sid}")
+
+                # --- Tell *local* clients so they log the leave and update their lists ---
+                if changed:
+                    local_remove = {
+                        "type": "USER_REMOVE",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"user": uid, "name": removed_name},
+                    }
+                    local_remove["sig"] = sign_payload(local_remove["payload"])
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(local_remove))
+                        except Exception:
+                            pass
+
+                    # Optional: push a fresh /list snapshot
+                    users_list = sorted(list(user_pubkeys.keys()))
+                    names_map = {u: user_names.get(u, u) for u in users_list}
+                    list_result = {
+                        "type": "CMD_LIST_RESULT",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"users": users_list, "names": names_map},
+                    }
+                    list_result["sig"] = sign_payload(list_result["payload"])
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(list_result))
+                        except Exception:
+                            pass
+
+                # --- Keep federating (avoid bouncing back to the sender socket) ---
+                for sid, link in list(servers.items()):
+                    if link == websocket:
+                        continue
+                    if not is_open(link):
+                        continue
+                    try:
+                        await link.send(json.dumps(msg))
+                    except Exception as e:
+                        print(f"[gossip] Failed to forward USER_REMOVE to {sid}: {e}")
+                payload = msg.get("payload", {})
+                uid = payload.get("user_id")
+                origin_sid = payload.get("server_id")
+
+                sig_b64u = msg.get("sig")
+                if not sig_b64u or origin_sid not in server_addrs:
+                    return
+                pubkey_b64u = server_addrs[origin_sid][2]
+                origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                    print(f"[gossip] BAD SIGNATURE in USER_REMOVE from {origin_sid}")
+                    return
+                
+
+
+                if user_locations.get(uid) == origin_sid:
+                    user_locations.pop(uid, None)
+                    user_pubkeys.pop(uid, None)   
+                    user_names.pop(uid, None)     
+                    print(f"[gossip] Removed user {uid} from server {origin_sid}")
+
+                 # Remove all state for that user if we mapped them to that origin
+                changed = False
+                if user_locations.get(uid) == origin_sid:
+                    user_locations.pop(uid, None)
+                    user_pubkeys.pop(uid, None)
+                    user_names.pop(uid, None)
+                    changed = True
+                    print(f"[gossip] Removed user {uid} from server {origin_sid}")
+
+                # ✅ Notify all *local* clients so their UIs/logs update
+                if changed:
+                    local_remove = {
+                        "type": "USER_REMOVE",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"user": uid},   # matches what you send on local disconnects
+                    }
+                    local_remove["sig"] = sign_payload(local_remove["payload"])
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(local_remove))
+                        except Exception:
+                            pass
+
+                    # (optional) also push a refreshed /list snapshot for UX
+                    users_list = sorted(list(user_pubkeys.keys()))
+                    names_map = {u: user_names.get(u, u) for u in users_list}
+                    list_result = {
+                        "type": "CMD_LIST_RESULT",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"users": users_list, "names": names_map},
+                    }
+                    list_result["sig"] = sign_payload(list_result["payload"])
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(list_result))
+                        except Exception:
+                            pass
+
+                
 
                 # Forward to others
                 for sid, link in list(servers.items()):
@@ -1077,6 +1201,10 @@ async def handle_ws(websocket, server_id: str, server_name: str):
     finally:
         # --- Cleanup user state after disconnect ----------------------------
         if user_id and websocket.close_code is not None:
+            # capture name BEFORE popping state
+            removed_name = user_names.get(user_id, user_id)
+
+
             local_users.pop(user_id, None)
             user_locations.pop(user_id, None)
             user_pubkeys.pop(user_id, None)
@@ -1090,7 +1218,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 "id": uuid.uuid4().hex,
                 "ts": now_ms(),
                 "relay": server_id,
-                "payload": {"user": user_id},
+                "payload": {"user": user_id, "name": removed_name},
             }
             remove_msg["sig"] = sign_payload(remove_msg["payload"])
             for uid, ws in list(local_users.items()):
@@ -1099,7 +1227,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 except Exception as e:
                     print(f"[{server_id}] Failed to send USER_REMOVE to {uid}: {e}")
             # --- Gossip USER_REMOVE to all known servers -------------------
-            gossip_payload = {"user_id": user_id, "server_id": server_id}
+            gossip_payload = {"user_id": user_id, "server_id": server_id, "name": removed_name} 
             gossip_msg = {
                 "type": "USER_REMOVE",
                 "from": server_id,
