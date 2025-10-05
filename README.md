@@ -129,7 +129,7 @@ Connected to ws://127.0.0.1:8765 as alice
 
 #### Connect Bob to Server B:
 ```bash
-python3 client.py --user bob --server ws://127.0.0.1:8766
+python3 client.py --user bob --server ws://127.0.0.1:8766 --id 11111111-1111-4111-8111-111111111112
 ```
 
 Output:
