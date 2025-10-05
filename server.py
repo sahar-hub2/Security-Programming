@@ -869,6 +869,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
                 # --- Notify all local clients about this remote user ---
                 user_name = payload.get("meta", {}).get("name", uid)
+                user_names[uid] = user_name
                 pubkey_b64u = payload.get("pubkey")
 
                 # Build a new, locally signed advert for our clients
