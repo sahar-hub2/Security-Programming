@@ -40,6 +40,23 @@ bootstrap_servers = [
     #  "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
 ]
 
+def is_open(ws):
+    """Return True if websocket connection is alive across websocket versions."""
+    if not ws:
+        return False
+    try:
+        # websockets <=10.x
+        if hasattr(ws, "open"):
+            return bool(ws.open)
+        if hasattr(ws, "closed"):
+            return not ws.closed
+        # websockets >=12.x (ClientConnection)
+        if hasattr(ws, "state"):
+            return getattr(ws.state, "name", "").upper() == "OPEN"
+    except Exception:
+        return False
+    return False
+
 # ---------------------------------------------------------------------------
 # Freshness / dedup helpers
 # ---------------------------------------------------------------------------
@@ -121,6 +138,40 @@ def build_server_announce(my_id, host, port, pubkey_b64u):
     }
 
 # ---------------------------------------------------------------------------
+# Presence Sync Helper (for newly connected servers)
+# ---------------------------------------------------------------------------
+def build_presence_sync(server_id):
+    """
+    Build a SERVER_PRESENCE_SYNC message containing all locally known users.
+    Each payload entry also includes the sender server_id for context.
+    """
+    entries = []
+    for uid, loc in user_locations.items():
+        if loc == "local" and uid in user_pubkeys:
+            entries.append({
+                "user_id": uid,
+                "server_id": server_id,  # who hosts this user
+                "meta": {"name": user_names.get(uid, uid)},
+                "pubkey": public_pem_to_der_b64url(user_pubkeys[uid].encode()),
+            })
+
+    payload = {
+        "server_id": server_id,  # <— include the sender id inside payload
+        "users": entries,
+    }
+
+    return {
+        "type": "SERVER_PRESENCE_SYNC",
+        "from": server_id,
+        "id": uuid.uuid4().hex,   # <— unique message id, not server id
+        "to": "*",
+        "ts": now_ms(),
+        "payload": payload,
+        "sig": sign_payload(payload),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main per-connection handler
 # ---------------------------------------------------------------------------
 async def bootstrap_with_introducer(my_id, host, port, pubkey_b64u):
@@ -133,13 +184,35 @@ async def bootstrap_with_introducer(my_id, host, port, pubkey_b64u):
 
                 raw = await ws.recv()
                 msg = json.loads(raw)
+                print(f"SERVER_WELCOME message: {msg}")
                 if msg.get("type") == "SERVER_WELCOME":
                     assigned_id = msg["payload"]["assigned_id"]
-                    servers.update({
-                        s["server_id"]: None for s in msg["payload"].get("servers", [])
-                    })
-                    print(f"[bootstrap] Got assigned_id={assigned_id}, known servers={list(servers.keys())}")
+
+                    # Store all known servers and their addresses
+                    for s in msg["payload"].get("servers", []):
+                        sid = s["server_id"]
+                        host = s["host"]
+                        port = s["port"]
+                        pubkey = s["pubkey"]
+                        server_addrs[sid] = (host, port, pubkey)
+                        servers[sid] = None
+
+                    # Store all known clients/users from the introducer
+                    for c in msg["payload"].get("clients", []):
+                        uid = c.get("user_id")
+                        pubkey_b64u = c.get("pubkey")
+                        if not uid or not pubkey_b64u:
+                            continue
+                        try:
+                            user_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u).decode()
+                            user_locations[uid] = entry.get("server_id", "introducer")  # map to introducer
+                            print(f"[bootstrap] Learned existing user {uid} from introducer.")
+                        except Exception as e:
+                            print(f"[bootstrap] Failed to import user {uid} from introducer: {e}")
+
+                    print(f"[bootstrap] Got assigned_id={assigned_id}, known servers={list(server_addrs.keys())}")
                     return assigned_id
+
         except Exception as e:
             print(f"[bootstrap] Failed to connect to {introducer_uri}: {e}")
             raise RuntimeError("Could not connect to any introducer")
@@ -325,23 +398,26 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                             await ws.send(json.dumps(advertise_msg))
                         except Exception as e:
                             print(f"[{server_id}] Failed to advertise {user_id} to {uid}: {e}")
-                # --- Gossip USER_ADVERTISE to all known servers ----------------
+                # --- Gossip payload now includes the user's public key ---
                 gossip_payload = {
                     "user_id": user_id,
                     "server_id": server_id,
                     "meta": {"name": user_names.get(user_id, user_id)},
+                    "pubkey": public_pem_to_der_b64url(pubkey_pem),  # ✅ include key
                 }
+
                 gossip_msg = {
                     "type": "USER_ADVERTISE",
                     "from": server_id,
                     "to": "*",
+                    "id": uuid.uuid4().hex,
                     "ts": now_ms(),
                     "payload": gossip_payload,
                 }
                 gossip_msg["sig"] = sign_payload(gossip_payload)
 
                 for sid, link in list(servers.items()):
-                    if link and link.open:
+                    if is_open(link):
                         try:
                             await link.send(json.dumps(gossip_msg))
                             print(f"[{server_id}] Gossiped USER_ADVERTISE for {user_id} to {sid}")
@@ -469,6 +545,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     deliver_msg = {
                         "type": "SERVER_DELIVER",
                         "from": server_id,          # my server ID
+                        "id": server_id,          # my server ID
                         "to": target_sid,           # recipient’s server
                         "ts": now_ms(),
                         "payload": deliver_payload,
@@ -523,7 +600,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 src = msg.get("from")
                 if not src:
                     continue
-                users_list = sorted(list(local_users.keys()))
+                # Show all known users (local + remote we learned)
+                users_list = sorted(list(user_pubkeys.keys()))
                 names_map = {uid: user_names.get(uid, uid) for uid in users_list}
                 response = {
                     "type": "CMD_LIST_RESULT",
@@ -534,7 +612,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "relay": server_id,
                     "payload": {
                         "users": users_list,
-                        "names": names_map,   # map uuid -> display name
+                        "names": names_map,
                     },
                 }
                 response["sig"] = sign_payload(response["payload"])
@@ -543,6 +621,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 except Exception as e:
                     print(f"[{server_id}] Failed to send CMD_LIST_RESULT to {src}: {e}")
                 continue
+
 
             # ================================================================
             # 5. CTRL_CLOSE — application-level heartbeat (spec §8.4)
@@ -575,6 +654,11 @@ async def handle_ws(websocket, server_id: str, server_name: str):
             # ================================================================
             elif mtype == "SERVER_HELLO_JOIN":
                 print(f"IN SERVER_HELLO_JOIN")
+                peer_id = msg["from"]
+                if peer_id not in servers:
+                    servers[peer_id] = websocket
+                    print(f"[federation] Accepted inbound connection from server {peer_id}")
+                
                 payload = msg.get("payload", {}) or {}
                 host = payload.get("host")
                 port = payload.get("port")
@@ -606,15 +690,69 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 server_addrs[assigned_id] = (host, port, pubkey_b64u)
                 servers[assigned_id] = websocket
                 print(f"[introducer] Registered server {assigned_id} at {host}:{port}")
+                
+                # --- Establish reverse federation link ---
+                peer_uri = f"ws://{host}:{port}"
+                try:
+                    peer_ws = await websockets.connect(peer_uri)
+                    servers[assigned_id] = peer_ws
+                    print(f"[federation] Connected back to new peer {assigned_id} at {peer_uri}")
+                    
+                    # --- Advertise the peer server's key to local clients (so they can verify relayed messages) ---
+                    advertise_peer = {
+                        "type": "USER_ADVERTISE",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {
+                            "user": new_sid,  # the peer server’s UUID
+                            "name": f"server-{new_sid[:8]}",
+                            "pubkey_b64u": pubkey_b64u,
+                        },
+                    }
+                    advertise_peer["sig"] = sign_payload(advertise_peer["payload"])
 
-                # Prepare SERVER_WELCOME response
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(advertise_peer))
+                            print(f"[announce] Sent USER_ADVERTISE (server peer {new_sid}) to local client {luid}")
+                        except Exception:
+                            pass
+
+                    
+                    # --- Immediately share local presence with the new peer ---
+                    presence_msg = build_presence_sync(server_id)
+                    try:
+                        await peer_ws.send(json.dumps(presence_msg))
+                        print(f"[federation] Sent presence sync ({len(presence_msg['payload']['users'])} users) to {assigned_id}")
+                    except Exception as e:
+                        print(f"[federation] Failed to send presence sync to {assigned_id}: {e}")
+
+                except Exception as e:
+                    print(f"[federation] Failed to connect back to {assigned_id} ({peer_uri}): {e}")
+
+                print(f"local users: {local_users}")
+                # Prepare SERVER_WELCOME response (per §8.1 — include clients list)
                 welcome_payload = {
                     "assigned_id": assigned_id,
                     "servers": [
                         {"server_id": sid, "host": h, "port": p, "pubkey": pk}
                         for sid, (h, p, pk) in server_addrs.items()
                     ],
+                    "clients": [
+                        {
+                            "user_id": uid,
+                            "host": host,
+                            "port": port,
+                            "pubkey": public_pem_to_der_b64url(user_pubkeys[uid].encode()),
+                        }
+                        for uid in list(local_users.keys())
+                        if uid in user_pubkeys
+                    ],
                 }
+
                 welcome_msg = {
                     "type": "SERVER_WELCOME",
                     "from": server_id,
@@ -624,6 +762,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 }
                 welcome_msg["sig"] = sign_payload(welcome_payload)
                 await websocket.send(json.dumps(welcome_msg))
+                print(f"[introducer] Sent SERVER_WELCOME with {len(welcome_payload['clients'])} clients.")
                 return
 
             elif mtype == "SERVER_ANNOUNCE":
@@ -632,14 +771,26 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 host = payload.get("host")
                 port = payload.get("port")
                 pubkey_b64u = payload.get("pubkey")
+                
+                # Store inbound federation connections automatically
+                peer_id = msg["from"]
+                if peer_id not in servers:
+                    servers[peer_id] = websocket
+                    print(f"[federation] Accepted inbound connection from server {peer_id}")
 
                 # Validate
                 if not new_sid or not host or not port or not pubkey_b64u:
                     print("[announce] Invalid SERVER_ANNOUNCE payload")
                     return
 
-                # Verify signature
-                sig_ok = rsa_pss_verify(pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(msg.get("sig")))
+                # Verify signature using the announcer's public key (from payload)
+                try:
+                    announcer_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                    sig_ok = rsa_pss_verify(announcer_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(msg.get("sig")))
+                except Exception as e:
+                    print(f"[announce] Failed to verify signature from {new_sid}: {e}")
+                    return
+
                 if not sig_ok:
                     print(f"[announce] BAD SIGNATURE from {new_sid}, ignoring")
                     return
@@ -647,6 +798,48 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 # Register the server
                 server_addrs[new_sid] = (host, port, pubkey_b64u)
                 print(f"[announce] Registered new server {new_sid} at {host}:{port}")
+                
+                # --- Establish reverse federation link ---
+                peer_uri = f"ws://{host}:{port}"
+                try:
+                    peer_ws = await websockets.connect(peer_uri)
+                    servers[new_sid] = peer_ws
+                    print(f"[federation] Connected back to new peer {new_sid} at {peer_uri}")
+                    
+                    # --- Advertise the peer server's key to local clients (so they can verify relayed messages) ---
+                    advertise_peer = {
+                        "type": "USER_ADVERTISE",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {
+                            "user": new_sid,  # the peer server’s UUID
+                            "name": f"server-{new_sid[:8]}",
+                            "pubkey_b64u": pubkey_b64u,
+                        },
+                    }
+                    advertise_peer["sig"] = sign_payload(advertise_peer["payload"])
+
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(advertise_peer))
+                            print(f"[announce] Sent USER_ADVERTISE (server peer {new_sid}) to local client {luid}")
+                        except Exception:
+                            pass
+
+                    
+                    presence_msg = build_presence_sync(server_id)
+                    try:
+                        await peer_ws.send(json.dumps(presence_msg))
+                        print(f"[federation] Sent presence sync ({len(presence_msg['payload']['users'])} users) to {new_sid}")
+                    except Exception as e:
+                        print(f"[federation] Failed to send presence sync to {new_sid}: {e}")
+
+                except Exception as e:
+                    print(f"[federation] Failed to connect back to {new_sid} ({peer_uri}): {e}")
+
             elif mtype == "USER_ADVERTISE":
                 payload = msg.get("payload", {})
                 uid = payload.get("user_id")
@@ -666,14 +859,62 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 user_locations[uid] = origin_sid
                 print(f"[gossip] Learned user {uid} is on server {origin_sid}")
 
-                # Forward to other servers (except the one we got it from)
+                # --- Store the remote user's public key, if provided ---
+                if "pubkey" in payload and payload["pubkey"]:
+                    try:
+                        pub_pem = der_b64url_to_public_pem(payload["pubkey"])
+                        user_pubkeys[uid] = pub_pem.decode()
+                        print(f"[gossip] Stored pubkey for remote user {uid}")
+                    except Exception as e:
+                        print(f"[gossip] Failed to decode pubkey for {uid}: {e}")
+
+                # --- Notify all local clients about this remote user ---
+                user_name = payload.get("meta", {}).get("name", uid)
+                pubkey_b64u = payload.get("pubkey")
+
+                # Build a new, locally signed advert for our clients
+                advertise_payload = {
+                    "user": uid,
+                    "name": user_name,
+                    "pubkey_b64u": pubkey_b64u,
+                }
+                local_advert = {
+                    "type": "USER_ADVERTISE",
+                    "from": server_id,
+                    "to": "*",
+                    "id": uuid.uuid4().hex,
+                    "ts": now_ms(),
+                    "relay": server_id,  # signer = this server (local)
+                    "payload": advertise_payload,
+                }
+
+                # Sign with this server’s private key
+                local_advert["sig"] = b64url_encode(
+                    rsa_pss_sign(server_priv_pem, json.dumps(advertise_payload, sort_keys=True).encode())
+                )
+
+                # Send to all local clients
+                for luid, ws in list(local_users.items()):
+                    try:
+                        await ws.send(json.dumps(local_advert))
+                        print(f"[gossip] Announced remote user {uid} to local client {luid}")
+                    except Exception as e:
+                        print(f"[gossip] Failed to announce remote user {uid} to {luid}: {e}")
+
+
+
+                # --- Forward the original frame verbatim to other servers ---
                 for sid, link in list(servers.items()):
-                    if link == websocket:  # don’t send back
+                    if sid == origin_sid:  # don't bounce back to the source
+                        continue
+                    if not is_open(link):
                         continue
                     try:
-                        await link.send(json.dumps(msg))
+                        await link.send(json.dumps(msg))  # send unmodified frame
                     except Exception as e:
                         print(f"[gossip] Failed to forward USER_ADVERTISE to {sid}: {e}")
+
+
 
             elif mtype == "USER_REMOVE":
                 payload = msg.get("payload", {})
@@ -701,14 +942,17 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         await link.send(json.dumps(msg))
                     except Exception as e:
                         print(f"[gossip] Failed to forward USER_REMOVE to {sid}: {e}")
+            
             elif mtype == "SERVER_DELIVER":
                 payload = msg.get("payload", {}) or {}
                 recipient = payload.get("user_id")
+                sender = payload.get("sender")
                 sender = payload.get("sender")
 
                 # Verify signature from the sending server
                 sig_b64u = msg.get("sig")
                 origin_sid = msg.get("from")
+                to_sid = msg.get("to")
                 if not sig_b64u or origin_sid not in server_addrs:
                     print(f"[{server_id}] SERVER_DELIVER missing sig or unknown origin")
                     return
@@ -718,9 +962,10 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not rsa_pss_verify(pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
                     print(f"[{server_id}] BAD SIG on SERVER_DELIVER from {origin_sid}")
                     return
-
+                print(f"user locations: {user_locations}")
                 # If recipient is local, deliver to them as USER_DELIVER
-                if user_locations.get(recipient) == "local":
+                if user_locations.get(recipient) == server_id:
+                    print(f"user found locally [{recipient}]")
                     user_ws = local_users.get(recipient)
                     if user_ws:
                         deliver_payload = {
@@ -743,6 +988,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         except Exception as e:
                             print(f"[{server_id}] Failed USER_DELIVER to {recipient}: {e}")
                 else:
+                    print(f"user message forwarding [{recipient}]")
                     # Recipient not here — forward again if possible
                     target_sid = user_locations.get(recipient)
                     if target_sid and target_sid in servers and servers[target_sid].open:
@@ -754,7 +1000,66 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     else:
                         print(f"[{server_id}] Unknown location for {recipient}, dropping SERVER_DELIVER.")
 
-            # ================================================================
+            elif mtype == "SERVER_PRESENCE_SYNC":
+                payload = msg.get("payload", {})
+                origin_sid = payload.get("server_id") or msg.get("from")
+                sig_b64u = msg.get("sig")
+
+                # --- Verify signature using sender server pubkey ---
+                if not sig_b64u or origin_sid not in server_addrs:
+                    print(f"[sync] Missing sig or unknown origin for SERVER_PRESENCE_SYNC")
+                    return
+
+                pubkey_b64u = server_addrs[origin_sid][2]
+                pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                if not rsa_pss_verify(
+                    pub_pem,
+                    json.dumps(payload, sort_keys=True).encode(),
+                    b64url_decode(sig_b64u),
+                ):
+                    print(f"[sync] BAD SIGNATURE in SERVER_PRESENCE_SYNC from {origin_sid}")
+                    return
+
+                # --- Import user entries only; DO NOT re-advertise ---
+                count = 0
+                for u in payload.get("users", []):
+                    uid = u.get("user_id")
+                    sid = u.get("server_id") or origin_sid
+                    pk_b64u = u.get("pubkey")
+                    if not uid or not sid or not pk_b64u:
+                        continue
+                    try:
+                        user_pubkeys[uid] = der_b64url_to_public_pem(pk_b64u).decode()
+                        user_locations[uid] = sid
+                        user_names[uid] = u.get("meta", {}).get("name", uid)
+                        count += 1
+                    except Exception as e:
+                        print(f"[sync] Failed to import {uid}: {e}")
+                print(f"[sync] Imported {count} users from {origin_sid}")
+                
+                # --- Notify local clients (optional UX refresh) ---
+                if count > 0:
+                    users_list = sorted(list(user_pubkeys.keys()))
+                    names_map = {uid: user_names.get(uid, uid) for uid in users_list}
+                    list_result = {
+                        "type": "CMD_LIST_RESULT",
+                        "from": server_id,
+                        "to": "*",
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "relay": server_id,
+                        "payload": {"users": users_list, "names": names_map},
+                    }
+                    list_result["sig"] = sign_payload(list_result["payload"])
+                    for luid, ws in list(local_users.items()):
+                        try:
+                            await ws.send(json.dumps(list_result))
+                        except Exception:
+                            pass
+
+
+
+            # ==========================================F======================
             # 6. Unknown or unsupported message type
             # ================================================================
             else:
@@ -810,6 +1115,21 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     except Exception as e:
                         print(f"[{server_id}] Gossip remove failed to {sid}: {e}")
 
+async def connect_to_known_servers(my_id, host, port):
+    for sid, (h, p, pk_b64u) in server_addrs.items():
+        if sid == my_id:
+            continue
+        uri = f"ws://{h}:{p}"
+        try:
+            ws = await websockets.connect(uri, ping_interval=15, ping_timeout=45)
+            servers[sid] = ws
+            print(f"[federation] Connected to peer {sid} at {uri}")
+            # Send SERVER_ANNOUNCE so the peer registers us
+            announce = build_server_announce(my_id, host, port, public_pem_to_der_b64url(pub_pem))
+            await ws.send(json.dumps(announce))
+        except Exception as e:
+            print(f"[federation] Failed to connect to {sid} ({uri}): {e}")
+
 # ---------------------------------------------------------------------------
 # Main server loop
 # ---------------------------------------------------------------------------
@@ -826,10 +1146,31 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
                 print("[bootstrap] Failed to obtain server ID from introducer.")
                 return
             print(f"[bootstrap] Using server ID: {server_uuid}")
+            
+            # Establish outgoing connections to all known servers
+            await connect_to_known_servers(server_uuid, host, port)
+
 
         except Exception as e:
             print("[bootstrap] Error:", e)
             return
+            
+        # async def connect_to_known_servers():
+        #     for sid, (h, p, pk_b64u) in server_addrs.items():
+        #         if sid == server_uuid:
+        #             continue  # skip self
+        #         uri = f"ws://{h}:{p}"
+        #         try:
+        #             ws = await websockets.connect(uri, ping_interval=15, ping_timeout=45)
+        #             servers[sid] = ws
+        #             print(f"[federation] Connected to peer server {sid} at {uri}")
+        #             # Optionally announce ourselves
+        #             announce = build_server_announce(server_uuid, host, port, public_pem_to_der_b64url(pub_pem))
+        #             await ws.send(json.dumps(announce))
+        #         except Exception as e:
+        #             print(f"[federation] Failed to connect to peer {sid} ({uri}): {e}")
+        
+        # await connect_to_known_servers()
 
     async def ws_handler(ws):
         await handle_ws(ws, server_uuid, server_name)
@@ -839,7 +1180,7 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
         # Once server is live, broadcast ANNOUNCE to all peers
         announce_msg = build_server_announce(server_uuid, host, port, public_pem_to_der_b64url(pub_pem))
         for sid, link in list(servers.items()):
-            if link and link.open:
+            if is_open(link):
                 try:
                     await link.send(json.dumps(announce_msg))
                     print(f"[{server_uuid}] Sent SERVER_ANNOUNCE to {sid}")

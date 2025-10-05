@@ -49,6 +49,7 @@ def verify_transport_sig(msg: dict, known_pubkeys: dict) -> bool:
         return True  # tolerate missing while developing
     signer_id = msg.get("relay") or msg.get("from")
     if signer_id not in known_pubkeys:
+        print(f"unknown pub key")
         return False
     payload_bytes = json.dumps(msg.get("payload", {}), sort_keys=True).encode()
     try:
@@ -143,7 +144,7 @@ async def run_client(nickname: str, server_url: str):
                     payload = {
                         "ciphertext": b64url_encode(ciphertext),
                         "sender_pub": public_pem_to_der_b64url(pub_pem),
-                        "signature": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),  # sign ciphertext itself
+                        "content_sig": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),  # sign ciphertext itself
                     }
 
                     # Add user's envelope signature (usig) over payload
@@ -194,7 +195,7 @@ async def run_client(nickname: str, server_url: str):
                             payload = {
                                 "ciphertext": b64url_encode(ciphertext),
                                 "sender_pub": public_pem_to_der_b64url(pub_pem),
-                                "signature": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),
+                                "content_sig": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),
                             }
 
                             usig_bytes = rsa_pss_sign(priv_pem, json.dumps(payload, sort_keys=True).encode())
@@ -229,6 +230,14 @@ async def run_client(nickname: str, server_url: str):
 
                     # ---------- Receive a USER_ADVERTISE ---------------------
                     if mtype == "USER_ADVERTISE":
+                        print(f"client user advertise: {msg}")
+                        # Ignore malformed or inter-server gossip frames
+                        if "user_id" in msg.get("payload", {}):
+                            # This is a gossip USER_ADVERTISE (server↔server format), not client-facing
+                            print("[debug] Skipping inter-server USER_ADVERTISE frame")
+                            continue
+
+                        
                         payload = msg.get("payload", {})
                         uid = payload.get("user")
                         pubkey_b64u = payload.get("pubkey_b64u")
@@ -243,7 +252,7 @@ async def run_client(nickname: str, server_url: str):
                                 known_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u)
                                 remember_name(uid, name)
                                 print(f"[bootstrap] learned SERVER pubkey for {display(uid)}")
-                                # Process any buffered adverts now
+                                # Process buffered adverts if any
                                 for pend in list(pending_advertises):
                                     if verify_transport_sig(pend, known_pubkeys):
                                         p = pend["payload"]
@@ -262,8 +271,18 @@ async def run_client(nickname: str, server_url: str):
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature on USER_ADVERTISE.")
                             continue
+
+                        # Store user key
                         known_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u)
                         remember_name(uid, name)
+
+                        # ✅ NEW FEATURE: show message when a new user joins remotely
+                        server_origin = msg.get("relay")
+                        if server_origin and server_origin != uid:
+                            print(f"🟢 [remote] {display(uid)} has joined the network via server {server_origin[:8]}")
+                        else:
+                            print(f"🟢 [local] {display(uid)} is now online")
+
                         print(f"[server] learned pubkey for {display(uid)}")
 
                     # ---------- Receive a direct encrypted message -----------
@@ -273,7 +292,7 @@ async def run_client(nickname: str, server_url: str):
                             continue
                         payload = msg.get("payload", {})
                         ciphertext_b64u = payload.get("ciphertext")
-                        signature_b64u  = payload.get("signature")
+                        signature_b64u  = payload.get("content_sig")
                         sender_uid = msg.get("from")
 
                         if not ciphertext_b64u or not signature_b64u:
@@ -338,7 +357,8 @@ async def run_client(nickname: str, server_url: str):
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature on USER_DELIVER.")
                             continue
-
+                        
+                        print(f"user deliver payload: [{msg}]")
                         payload = msg.get("payload", {})
                         ciphertext_b64u = payload.get("ciphertext")
                         sender_uid = payload.get("sender")
