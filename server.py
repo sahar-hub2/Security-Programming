@@ -35,6 +35,17 @@ from keys import (
 last_seen = {}  # server_id -> last heartbeat timestamp (time.time())
 HEARTBEAT_INTERVAL = 15
 
+from datavault import (
+    init_db,
+    register_user,
+    get_user_pubkey,
+    verify_user_password,
+    ensure_public_channel,
+    add_member_to_public,
+    list_users,
+    list_public_members,
+)
+
 import yaml
 
 def load_introducers(yaml_path="introducers.yaml"):
@@ -379,6 +390,22 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     await websocket.send(json.dumps(error_msg))
                     continue
 
+                # --- Persist user in DataVault (§13, §15) --------------------
+                try:
+                    dummy_priv_blob = "encrypted_priv_placeholder"
+                    dummy_password  = "default"
+                    await register_user(
+                        user_id,
+                        pubkey_b64u,
+                        dummy_priv_blob,
+                        dummy_password,
+                        display_name=name
+                    )
+                    await add_member_to_public(user_id, wrapped_key="wrapped_group_key_placeholder")
+                    print(f"[vault] Registered user {name or user_id} in DataVault.")
+                except Exception as e:
+                    print(f"[vault] Failed to register user {user_id}: {e}")
+                
                 # --- Convert wire key (DER+b64url) to PEM for internal use ---
                 pubkey_pem = der_b64url_to_public_pem(pubkey_b64u)
 
@@ -401,6 +428,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "user": server_id,
                         "name": server_name,
                         "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
+                        "via": server_id,   # NEW ✅ hosting server id
                     },
                 }
                 server_advertise["sig"] = sign_payload(server_advertise["payload"])
@@ -441,6 +469,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "user": user_id,
                         "name": user_names.get(user_id, user_id),
                         "pubkey_b64u": public_pem_to_der_b64url(pubkey_pem),
+                        "via": server_id,
                     },
                 }
                 advertise_msg["sig"] = sign_payload(advertise_msg["payload"])
@@ -656,8 +685,12 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not src:
                     continue
                 # Show all known users (local + remote we learned)
-                users_list = sorted(list(user_pubkeys.keys()))
-                names_map = {uid: user_names.get(uid, uid) for uid in users_list}
+                from datavault import list_users
+
+                vault_users = await list_users()
+                users_list = sorted(vault_users.keys())
+                names_map = vault_users
+
                 response = {
                     "type": "CMD_LIST_RESULT",
                     "from": server_id,
@@ -900,6 +933,14 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 uid = payload.get("user_id")
                 origin_sid = payload.get("server_id")
 
+                # 🚫 Prevent reprocessing gossip about our own local users
+                if origin_sid == server_id:
+                    return
+
+                # 🚫 Prevent overwriting known remote user locations
+                if uid in user_locations and user_locations[uid] != origin_sid:
+                    return
+
                 # Verify signature using sender server pubkey
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
@@ -933,6 +974,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "user": uid,
                     "name": user_name,
                     "pubkey_b64u": pubkey_b64u,
+                    "via": origin_sid,
                 }
                 local_advert = {
                     "type": "USER_ADVERTISE",
@@ -1702,6 +1744,12 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
         except Exception as e:
             print("[bootstrap] Error:", e)
             return
+        
+    # ✅ Initialise persistent SQLite DataVault
+    from datavault import init_db  # import inside to avoid circular refs
+    init_db()  # create tables if not exist
+    await ensure_public_channel()  # make sure 'public' group exists
+    print("[vault] SQLite database initialised and public channel ready.")
 
     async def ws_handler(ws):
         await handle_ws(ws, server_uuid, server_name)
