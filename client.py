@@ -27,11 +27,13 @@ from keys import (
     der_b64url_to_public_pem,
     load_or_create_user_uuid,
 )
+from cryptography.hazmat.primitives import serialization, hashes
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
 CHUNK_SIZE = 256 * 1024  # 256 KB before encryption (adjust)
+FILE_PING_EVERY = 50  # send a websocket ping every N file chunks
 
 DOWNLOADS_DIR = os.path.join(os.getcwd(), "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
@@ -68,6 +70,19 @@ def verify_transport_sig(msg: dict, known_pubkeys: dict) -> bool:
     except Exception:
         return False
 
+
+def canonical(obj: dict) -> bytes:
+    # Deterministic JSON for signature input
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+
+def make_content_sig(priv_pem: bytes, ciphertext_b64u: str, frm: str, to: str, ts: int) -> str:
+    msg = {"ciphertext": ciphertext_b64u, "from": frm, "to": to, "ts": ts}
+    sig = rsa_pss_sign(priv_pem, canonical(msg))
+    return b64url_encode(sig)
+
+def verify_content_sig(pub_pem: bytes, ciphertext_b64u: str, frm: str, to: str, ts: int, sig_b64u: str) -> bool:
+    msg = {"ciphertext": ciphertext_b64u, "from": frm, "to": to, "ts": ts}
+    return rsa_pss_verify(pub_pem, canonical(msg), b64url_decode(sig_b64u))
 # ---------------------------------------------------------------------------
 # Main async client function
 # ---------------------------------------------------------------------------
@@ -111,7 +126,7 @@ async def run_client(nickname: str, server_url: str):
         return f"{n} ({uid})" if n and n != uid else uid
 
     # Establish WebSocket connection to the target SOCP server
-    async with websockets.connect(server_url, ping_interval=15, ping_timeout=45) as ws:
+    async with websockets.connect(server_url, ping_interval=60, ping_timeout=360) as ws:
         # --- 1. Registration handshake -------------------------------------
         await ws.send(json.dumps({
             "type": "USER_HELLO",
@@ -120,7 +135,9 @@ async def run_client(nickname: str, server_url: str):
             "id": uuid.uuid4().hex,
             "ts": now_ms(),
             "payload": {
+                "client": "cli-v1",
                 "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
+                "enc_pubkey":  public_pem_to_der_b64url(pub_pem),
                 "name": nickname,  # human-friendly name for UX
             },
         }))
@@ -144,47 +161,41 @@ async def run_client(nickname: str, server_url: str):
                         continue
                     target_raw, msg_text = parts[1], parts[2]
 
-                    # Resolve target: prefer UUID, else by (case-insensitive) name
-                    if target_raw in known_pubkeys:
-                        target = target_raw
-                    elif UUID_RE.match(target_raw):
-                        target = target_raw
-                        if target not in known_pubkeys:
-                            print(f"No public key for {target}, cannot send encrypted message.")
-                            continue
-                    else:
-                        looked = name_index.get(target_raw.lower())
-                        if not looked:
-                            print(f"Unknown recipient '{target_raw}'. Try /list.")
-                            continue
-                        target = looked
+                    # Resolve target
+                   # Resolve target (UUID or case-insensitive name) and require known key
+                    dst = resolve_user_id(target_raw)
+                    if not dst:
+                        print(f"Unknown recipient '{target_raw}'. Try /list.")
+                        continue
+                    if dst not in known_pubkeys:
+                        print(f"No public key for {display(dst)} yet. Wait for adverts or run /list.")
+                        continue
 
-                    # Encrypt with recipient’s public key
-                    ciphertext = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
+                    # Encrypt and sign
+                    ts = now_ms()
+                    ct_bytes = rsa_oaep_encrypt(known_pubkeys[dst], msg_text.encode())
+                    ct_b64u  = b64url_encode(ct_bytes)
 
-                    # Build payload
                     payload = {
-                        "ciphertext": b64url_encode(ciphertext),
+                        "ciphertext": ct_b64u,
                         "sender_pub": public_pem_to_der_b64url(pub_pem),
-                        "content_sig": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),  # sign ciphertext itself
+                        "content_sig": make_content_sig(priv_pem, ct_b64u, proto_id, dst, ts),
                     }
-
-                    # Add user's envelope signature (usig) over payload
+                    # Server verifies usig over json.dumps(payload, sort_keys=True) (with spaces),
+                    # so we must sign the exact same bytes.
                     usig_bytes = rsa_pss_sign(priv_pem, json.dumps(payload, sort_keys=True).encode())
-                    usig_b64u = b64url_encode(usig_bytes)
+                    usig = b64url_encode(usig_bytes)
 
-                    # Build final message frame
-                    msg = {
+                    frame = {
                         "type": "MSG_DIRECT",
                         "from": proto_id,
-                        "to": target,
+                        "to": dst,
                         "id": uuid.uuid4().hex,
-                        "ts": now_ms(),
+                        "ts": ts,
                         "payload": payload,
-                        "usig": usig_b64u,
+                        "usig": usig,
                     }
-
-                    await ws.send(json.dumps(msg))
+                    await ws.send(json.dumps(frame))
 
 
                 # -------------------- List Connected Users (/list) ------------
@@ -204,42 +215,52 @@ async def run_client(nickname: str, server_url: str):
                 # -------------------- Broadcast Message (/all) ----------------
                 # SOCP §1 & §4 require E2EE + signatures for user content.
                 # We implement fan-out: per-recipient MSG_DIRECT, each encrypted+signed.
+                
                 elif line.startswith("/all "):
                     msg_text = line[len("/all "):]
-                    targets = [uid for uid in known_pubkeys.keys() if uid != proto_id]
+                    targets = [
+                        uid for uid in known_pubkeys.keys()
+                        if uid != proto_id
+                        and UUID_RE.match(uid)  # only proper UUID v4 user ids
+                        and not id_to_name.get(uid, "").startswith("server-")  # skip server IDs we learned
+                    ]
                     if not targets:
                         print("[all] No known recipients yet; wait for advertisements or /list.")
                         continue
+
                     for target in targets:
                         try:
-                            ciphertext = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
+                            ts = now_ms()
+                            ct_bytes = rsa_oaep_encrypt(known_pubkeys[target], msg_text.encode())
+                            ct_b64u  = b64url_encode(ct_bytes)
 
                             payload = {
-                                "ciphertext": b64url_encode(ciphertext),
+                                "ciphertext": ct_b64u,
                                 "sender_pub": public_pem_to_der_b64url(pub_pem),
-                                "content_sig": b64url_encode(rsa_pss_sign(priv_pem, ciphertext)),
+                                "content_sig": make_content_sig(priv_pem, ct_b64u, proto_id, target, ts),
                             }
-
+                            # Server verifies usig over json.dumps(payload, sort_keys=True) (with spaces),
+                            # so we must sign the exact same bytes.
                             usig_bytes = rsa_pss_sign(priv_pem, json.dumps(payload, sort_keys=True).encode())
-                            usig_b64u = b64url_encode(usig_bytes)
+                            usig = b64url_encode(usig_bytes)
 
-                            msg = {
+                            frame = {
                                 "type": "MSG_DIRECT",
                                 "from": proto_id,
                                 "to": target,
                                 "id": uuid.uuid4().hex,
-                                "ts": now_ms(),
+                                "ts": ts,
                                 "payload": payload,
-                                "usig": usig_b64u,
+                                "usig": usig,
                             }
-
-                            await ws.send(json.dumps(msg))
+                            await ws.send(json.dumps(frame))
                         except Exception as e:
                             print(f"[all] Failed to send to {display(target)}: {e}")
 
+
                 elif line.startswith("/sendfile "):
                     try:
-                        _, to_str, path = line.split(maxsplit=2)   # <-- use line, not text
+                        _, to_str, path = line.split(maxsplit=2)
                     except ValueError:
                         print("usage: /sendfile <user|uuid> <path>")
                         continue
@@ -253,14 +274,19 @@ async def run_client(nickname: str, server_url: str):
                         print(f"file not found: {path}")
                         continue
 
+                    # read file & compute digest
+                    with open(path, "rb") as f:
+                        data = f.read()
+                    sha256_hex = __import__("hashlib").sha256(data).hexdigest()
+
                     file_id = str(uuid.uuid4())
-                    size = os.path.getsize(path)
+                    size = len(data)
                     name = os.path.basename(path)
 
-                    # 1) FILE_START
+                    # start
                     start = {
                         "type": "FILE_START",
-                        "from": proto_id,           # <-- your user id
+                        "from": proto_id,
                         "to": dst,
                         "id": uuid.uuid4().hex,
                         "ts": now_ms(),
@@ -268,43 +294,74 @@ async def run_client(nickname: str, server_url: str):
                             "file_id": file_id,
                             "name": name,
                             "size": size,
-                            "sha256": "",           # fill later if you want
-                            "mode": "dm"
+                            "sha256": sha256_hex,
+                            "mode": "dm",
                         },
                     }
                     await ws.send(json.dumps(start))
 
-                    # 2) FILE_CHUNK (demo "encryption" = base64 of raw bytes)
+                    # chunk & encrypt (RSA-OAEP per chunk under recipient pubkey)
                     sent = 0
                     idx = 0
-                    with open(path, "rb") as f:
-                        while True:
-                            chunk = f.read(CHUNK_SIZE)
-                            if not chunk:
-                                break
 
-                            ciphertext = b64url_encode(chunk)  # replace with RSA-OAEP later
+                    # Compute the OAEP-safe max plaintext length for this recipient key
+                    
+                    def _oaep_max_len(pub_pem: bytes) -> int:
+                        pub = serialization.load_pem_public_key(pub_pem)
+                        key_bytes = (pub.key_size + 7) // 8                # e.g., 4096 bits -> 512 bytes
+                        hlen = hashes.SHA256().digest_size                 # 32 bytes
+                        return key_bytes - 2*hlen - 2                      # OAEP limit
 
-                            frame = {
-                                "type": "FILE_CHUNK",
-                                "from": proto_id,
-                                "to": dst,
-                                "id": uuid.uuid4().hex,
-                                "ts": now_ms(),
-                                "payload": {
-                                    "file_id": file_id,
-                                    "index": idx,
-                                    "ciphertext": ciphertext
-                                },
-                            }
-                            await ws.send(json.dumps(frame))
-                            idx += 1
-                            sent += len(chunk)
-                            if idx % 32 == 0 or sent == size:
-                                print(f"  sent {sent}/{size} bytes...", end="\r")
-                            await asyncio.sleep(0)  # yield
+                    recip_pub = known_pubkeys.get(dst)
+                    if not recip_pub:
+                        print(f"No public key for {display(dst)}; aborting file send.")
+                        continue
 
-                    # 3) FILE_END
+                    max_len = _oaep_max_len(recip_pub)
+                    if max_len <= 0:
+                        print("Unsupported key/params for OAEP.")
+                        continue
+
+                    # Use the exact OAEP limit (optionally minus a few bytes for paranoia)
+                    chunk_size = max_len  # e.g., 446 bytes for RSA-4096 + SHA-256
+                    if not recip_pub:
+                        print(f"No public key for {display(dst)}; aborting file send.")
+                        continue
+
+                    for off in range(0, size, chunk_size):
+                        chunk = data[off:off+chunk_size]
+                        loop = asyncio.get_running_loop()
+                        ct_bytes = await loop.run_in_executor(None, rsa_oaep_encrypt, recip_pub, chunk)
+                        ct_b64u  = b64url_encode(ct_bytes)
+
+                        frame = {
+                            "type": "FILE_CHUNK",
+                            "from": proto_id,
+                            "to": dst,
+                            "id": uuid.uuid4().hex,
+                            "ts": now_ms(),
+                            "payload": {
+                                "file_id": file_id,
+                                "index": idx,
+                                "ciphertext": ct_b64u,
+                            },
+                        }
+                        await ws.send(json.dumps(frame))
+                        idx += 1
+                        sent += len(chunk)
+
+                        # light pacing + keepalive so the server can reply/pong while we stream
+                        if idx % FILE_PING_EVERY == 0:
+                            try:
+                                await ws.ping()
+                            except Exception:
+                                pass
+
+                        if idx % 32 == 0 or sent == size:
+                            print(f"  sent {sent}/{size} bytes...", end="\r")
+
+                        await asyncio.sleep(0)  # yield to event loop
+
                     end = {
                         "type": "FILE_END",
                         "from": proto_id,
@@ -316,6 +373,7 @@ async def run_client(nickname: str, server_url: str):
                     await ws.send(json.dumps(end))
                     print(f"\nFile sent: {name} ({size} bytes) in {idx} chunks")
                     continue
+                                
         # -------------------------------------------------------------------
         # Inner coroutine: handles incoming messages (receive -> display)
         # -------------------------------------------------------------------
@@ -392,27 +450,35 @@ async def run_client(nickname: str, server_url: str):
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature.")
                             continue
-                        payload = msg.get("payload", {})
-                        ciphertext_b64u = payload.get("ciphertext")
-                        signature_b64u  = payload.get("content_sig")
+
+                        p = msg.get("payload", {}) or {}
+                        ct_b64u  = p.get("ciphertext")
+                        sig_b64u = p.get("content_sig")
+                        sender_pub_b64u = p.get("sender_pub")
                         sender_uid = msg.get("from")
+                        recip_uid  = msg.get("to")
+                        ts_msg     = msg.get("ts")
 
-                        if not ciphertext_b64u or not signature_b64u:
-                            print(f"[recv] Invalid message from {display(sender_uid)}")
-                            continue
-                        if sender_uid not in known_pubkeys:
-                            print(f"Message from {display(sender_uid)}, but no pubkey known.")
-                            continue
-
-                        ciphertext = b64url_decode(ciphertext_b64u)
-                        signature  = b64url_decode(signature_b64u)
-
-                        if not rsa_pss_verify(known_pubkeys[sender_uid], ciphertext, signature):
-                            print(f"[SECURITY] Invalid signature from {display(sender_uid)}!")
+                        if not ct_b64u or not sig_b64u or not sender_pub_b64u or not sender_uid or not recip_uid or ts_msg is None:
+                            print("[recv] Invalid MSG_DIRECT frame")
                             continue
 
-                        plaintext = rsa_oaep_decrypt(priv_pem, ciphertext).decode()
-                        print(f"{display(sender_uid)}: {plaintext}")
+                        try:
+                            sender_pub_pem = der_b64url_to_public_pem(sender_pub_b64u)
+                            # verify content_sig over (ciphertext|from|to|ts)
+                            if not verify_content_sig(sender_pub_pem, ct_b64u, sender_uid, recip_uid, ts_msg, sig_b64u):
+                                print(f"[SECURITY] BAD content_sig from {display(sender_uid)}")
+                                continue
+
+                            # cache sender key
+                            if sender_uid not in known_pubkeys:
+                                known_pubkeys[sender_uid] = sender_pub_pem
+
+                            # decrypt
+                            plaintext = rsa_oaep_decrypt(priv_pem, b64url_decode(ct_b64u)).decode()
+                            print(f"{display(sender_uid)}: {plaintext}")
+                        except Exception as e:
+                            print(f"[recv] Failed to process MSG_DIRECT: {e}")
 
                     # ---------- Handle USER_REMOVE (disconnection) ------------
                     elif mtype == "USER_REMOVE":
@@ -456,42 +522,39 @@ async def run_client(nickname: str, server_url: str):
                         pretty = ", ".join([display(uid) for uid in users]) if users else "(none)"
                         print(f"Connected users: {pretty}")
                     
+
                     elif mtype == "USER_DELIVER":
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature on USER_DELIVER.")
                             continue
                         
-                        payload = msg.get("payload", {})
-                        ciphertext_b64u = payload.get("ciphertext")
-                        sender_uid = payload.get("sender")
-                        sender_pub_b64u = payload.get("sender_pub")
-                        content_sig_b64u = payload.get("content_sig")
+                        p = msg.get("payload", {}) or {}
+                        ct_b64u  = p.get("ciphertext")
+                        sig_b64u = p.get("content_sig")
+                        sender_uid = p.get("sender")
+                        sender_pub_b64u = p.get("sender_pub")
+                        recip_uid = proto_id
+                        ts_msg = msg.get("ts")
 
-                        if not ciphertext_b64u or not sender_uid or not sender_pub_b64u or not content_sig_b64u:
+                        if not ct_b64u or not sig_b64u or not sender_uid or not sender_pub_b64u or ts_msg is None:
                             print("[recv] Malformed USER_DELIVER payload")
                             continue
 
                         try:
-                            ciphertext = b64url_decode(ciphertext_b64u)
-                            plaintext = rsa_oaep_decrypt(priv_pem, ciphertext).decode()
-
-                            # Verify end-to-end signature
                             sender_pub_pem = der_b64url_to_public_pem(sender_pub_b64u)
-                            sig_ok = rsa_pss_verify(sender_pub_pem, ciphertext, b64url_decode(content_sig_b64u))
 
-                            if not sig_ok:
-                                print(f"[SECURITY] Invalid content signature from {sender_uid}")
+                            if not verify_content_sig(sender_pub_pem, ct_b64u, sender_uid, recip_uid, ts_msg, sig_b64u):
+                                print(f"[SECURITY] Invalid content signature from {display(sender_uid)}")
                                 continue
 
-                            # Remember the sender’s key if not already stored
                             if sender_uid not in known_pubkeys:
                                 known_pubkeys[sender_uid] = sender_pub_pem
 
+                            plaintext = rsa_oaep_decrypt(priv_pem, b64url_decode(ct_b64u)).decode()
                             print(f"{display(sender_uid)}: {plaintext}")
-
                         except Exception as e:
                             print(f"[recv] Failed to process USER_DELIVER: {e}")
-
+                   
                     elif mtype == "USER_FILE_START":
                         if not verify_transport_sig(msg, known_pubkeys):
                             print("[SECURITY] Invalid server transport signature on USER_FILE_START.")
@@ -501,13 +564,16 @@ async def run_client(nickname: str, server_url: str):
                         name = p.get("name") or f"{fid}.bin"
                         size = int(p.get("size") or -1)
                         sender = p.get("sender")
+                        sha256_hex = p.get("sha256")
+
                         incoming_files[fid] = {
                             "name": name,
                             "size": size,
                             "bufs": {},
                             "sender": sender,
-                            "received_bytes": 0,     # <-- init
-                            "received_chunks": 0,    # <-- init
+                            "received_bytes": 0,
+                            "received_chunks": 0,
+                            "sha256": sha256_hex,
                         }
                         print(f"\n[recv] File incoming from {resolve_name(sender)}: {name} ({size} bytes)")
                         continue
@@ -527,7 +593,6 @@ async def run_client(nickname: str, server_url: str):
                             print("[recv] Malformed USER_FILE_CHUNK payload:", p)
                             continue
 
-                        # Ensure we have a record (in case CHUNK arrives before START)
                         if fid not in incoming_files:
                             incoming_files[fid] = {
                                 "name": f"{fid}.bin",
@@ -536,21 +601,24 @@ async def run_client(nickname: str, server_url: str):
                                 "sender": sender,
                                 "received_bytes": 0,
                                 "received_chunks": 0,
+                                "sha256": None,
                             }
 
-                        # Decode and store
+                        # decrypt the chunk
                         try:
-                            plaintext = b64url_decode(ct)
+                            loop = asyncio.get_running_loop()
+                            ct_bytes = b64url_decode(ct)
+                            pt = await loop.run_in_executor(None, rsa_oaep_decrypt, priv_pem, ct_bytes)
                         except Exception:
-                            plaintext = b""
-
-                        incoming_files[fid]["bufs"][idx] = plaintext
-                        incoming_files[fid]["received_chunks"] += 1
-                        incoming_files[fid]["received_bytes"]  += len(plaintext)
+                            pt = b""
 
                         meta = incoming_files[fid]
+                        meta["bufs"][int(idx)] = pt
+                        meta["received_chunks"] += 1
+                        meta["received_bytes"]  += len(pt)
+
                         expected = meta.get("size", -1)
-                        print(f"[recv] chunk {idx} for {meta['name']} ({len(plaintext)} bytes)  "
+                        print(f"[recv] chunk {idx} for {meta['name']} ({len(pt)} bytes)  "
                             f"total={meta['received_chunks']} chunks, "
                             f"{meta['received_bytes']}/{expected if expected>0 else '?'} bytes")
 
@@ -567,33 +635,24 @@ async def run_client(nickname: str, server_url: str):
                             print("[recv] FILE_END for unknown file:", fid)
                             continue
 
-                        # --- sanity / visibility before reassembly ---
-                        recv_chunks = len(meta.get("bufs", {}))
-                        recv_bytes  = sum(len(meta["bufs"][i]) for i in meta["bufs"])
-                        expected    = meta.get("size", -1)
-
-                        # detect gaps (missing indices)
+                        # assemble
                         indices = sorted(meta["bufs"].keys())
-                        missing = []
-                        if indices:
-                            # expected contiguous 0..max_idx
-                            max_idx = indices[-1]
-                            missing = [i for i in range(max_idx + 1) if i not in meta["bufs"]]
-
-                        if missing:
-                            print(f"[warn] Missing {len(missing)} chunk(s) for {meta['name']}: first few -> {missing[:10]}")
-
-                        print(f"[debug] END for {meta['name']}: {recv_chunks} chunks, {recv_bytes}"
-                            + (f"/{expected} bytes" if expected > 0 else "/? bytes"))
-
-                        # --- reassemble in order 0..N-1 (whatever we have) ---
                         data = b"".join(meta["bufs"][i] for i in indices)
 
-                        # size sanity
+                        # size check
+                        expected = meta.get("size", -1)
                         if expected > 0 and len(data) != expected:
                             print(f"[warn] file size mismatch for {meta['name']}: got {len(data)} vs expected {expected}")
+                            # (still proceed; spec doesn’t mandate drop on mismatch)
 
-                        # --- save to downloads/ (avoid overwrite) ---
+                        # sha256 check (if provided)
+                        if meta.get("sha256"):
+                            got = __import__("hashlib").sha256(data).hexdigest()
+                            if got != meta["sha256"]:
+                                print(f"[recv] sha256 mismatch for {meta['name']} — discarding")
+                                continue
+
+                        # save to downloads/
                         safe_name = meta["name"]
                         outpath = os.path.join(DOWNLOADS_DIR, safe_name)
                         base, ext = os.path.splitext(outpath)
@@ -608,8 +667,12 @@ async def run_client(nickname: str, server_url: str):
                             print(f"[recv] File saved: {outpath} ({len(data)} bytes) from {resolve_name(meta['sender'])}")
                         except Exception as e:
                             print(f"[error] failed to save {safe_name}: {e}")
-
                         continue
+                    elif mtype == "ERROR":
+                        p = msg.get("payload", {}) or {}
+                        code = p.get("code")
+                        detail = p.get("detail")
+                        print(f"[server ERROR] {code}" + (f": {detail}" if detail else ""))
             except asyncio.CancelledError:
                 pass
 

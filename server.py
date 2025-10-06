@@ -113,6 +113,15 @@ def sign_payload(payload: dict) -> str:
     payload_bytes = json.dumps(payload, sort_keys=True).encode()
     return b64url_encode(rsa_pss_sign(priv_pem, payload_bytes))
 
+async def sign_payload_async(payload: dict) -> str:
+    """
+    Same as sign_payload, but offloads the RSA-PSS work to a thread so we don't
+    block the event loop while streaming lots of FILE_CHUNK frames.
+    """
+    payload_bytes = json.dumps(payload, sort_keys=True).encode()
+    sig_bytes = await asyncio.to_thread(rsa_pss_sign, priv_pem, payload_bytes)
+    return b64url_encode(sig_bytes)
+
 def build_server_hello_join(my_id, host, port, pubkey_b64u):
     return {
         "type": "SERVER_HELLO_JOIN",
@@ -294,7 +303,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
             if mtype == "USER_HELLO":
                 user_id = msg.get("from")
                 payload = msg.get("payload", {}) or {}
-                pubkey_b64u = payload.get("pubkey_b64u")
+                pubkey_b64u = payload.get("pubkey_b64u") or payload.get("pubkey")
                 name = payload.get("name")  # optional nickname for UX
 
                 # --- Validate registration fields ----------------------------
@@ -512,24 +521,28 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
                 # --- Deliver to local recipient ------------------------------
                 if loc == "local":
-                    deliver = {
-                        "type": "MSG_DIRECT",
-                        "from": src,          # sender user id (UUID v4)
-                        "to": dst,
-                        "id": mid,            # keep original client id
-                        "ts": now_ms(),
-                        "relay": server_id,   # transport signer
-                        "payload": payload,   # unchanged; receiver verifies inner signature
-                        "usig": usig_b64u,    # (optional) forward user envelope sig for auditing
-                    }
-                    deliver["sig"] = sign_payload(deliver["payload"])
                     target_ws = local_users.get(dst)
                     if target_ws:
+                        deliver_payload = {
+                            "ciphertext": payload.get("ciphertext"),
+                            "sender": src,
+                            "sender_pub": payload.get("sender_pub"),
+                            "content_sig": payload.get("content_sig"),
+                        }
+                        user_msg = {
+                            "type": "USER_DELIVER",
+                            "from": server_id,
+                            "to": dst,
+                            "ts": msg.get("ts"),
+                            "payload": deliver_payload,
+                        }
+                        user_msg["sig"] = sign_payload(deliver_payload)
                         try:
-                            await target_ws.send(json.dumps(deliver))
-                            print(f"[{server_id}] Delivered {user_names.get(src, src)} -> {user_names.get(dst, dst)}")
+                            await target_ws.send(json.dumps(user_msg))
+                            print(f"[{server_id}] Delivered LOCAL message {user_names.get(src, src)} -> {user_names.get(dst, dst)}")
                         except Exception as e:
                             print(f"[{server_id}] Delivery to {dst} failed: {e}")
+                    continue
                 else:
                     # --- Forward to remote server via SERVER_DELIVER -------------
                     target_sid = loc  # which server hosts the recipient
@@ -539,6 +552,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "sender": src,
                         "sender_pub": payload.get("sender_pub"),
                         "content_sig": payload.get("content_sig"),
+                        "cts": msg.get("ts"),
                     }
                     deliver_msg = {
                         "type": "SERVER_DELIVER",
@@ -988,9 +1002,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         await link.send(json.dumps(msg))
                     except Exception as e:
                         print(f"[gossip] Failed to forward USER_REMOVE to {sid}: {e}")
-                payload = msg.get("payload", {})
-                uid = payload.get("user_id")
-                origin_sid = payload.get("server_id")
+               
 
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
@@ -1190,7 +1202,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                             }
                             print(f"[{server_id}] ->USER_FILE_END to {recipient} fid={f.get('file_id')}")
 
-                        down["sig"] = sign_payload(down["payload"])
+                        down["sig"] = await sign_payload_async(down["payload"])
                         try:
                             await user_ws.send(json.dumps(down))
                         except Exception as e:
@@ -1230,7 +1242,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                                 "type": "USER_DELIVER",
                                 "from": server_id,
                                 "to": recipient,
-                                "ts": now_ms(),
+                                "ts": payload.get("cts") or now_ms(),
                                 "payload": deliver_payload,
                             }
                             user_msg["sig"] = sign_payload(deliver_payload)
@@ -1317,6 +1329,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 name  = payload.get("name")
                 size  = int(payload.get("size") or 0)
                 mode  = (payload.get("mode") or "dm").lower()
+                sha256_hex = payload.get("sha256")  
 
                 # validate
                 if not src or not dst or not fid or size < 0:
@@ -1341,22 +1354,22 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     continue
 
                 # track (optional)
-                file_sessions[fid] = {"from":src, "to":dst, "size":size, "mode":mode, "name":name}
+                file_sessions[fid] = {"from":src, "to":dst, "size":size, "mode":mode, "name":name, "sha256": sha256_hex}
 
                 if loc == "local":
-                    deliver_payload = {"file_id": fid, "name": name, "size": size, "mode": mode, "sender": src}
+                    deliver_payload = {"file_id": fid, "name": name, "size": size, "mode": mode, "sender": src, "sha256": sha256_hex }
                     out = {"type":"USER_FILE_START","from":server_id,"to":dst,"id":uuid.uuid4().hex,"ts":now_ms(),
                             "relay":server_id,"payload":deliver_payload}
-                    out["sig"] = sign_payload(deliver_payload)
+                    out["sig"] = await sign_payload_async(deliver_payload)
                     ws_to = local_users.get(dst)
                     if ws_to:
                         try: await ws_to.send(json.dumps(out))
                         except Exception as e: print(f"[{server_id}] USER_FILE_START to {dst} failed: {e}")
                 else:
                     deliver_payload = {"kind":"FILE_START","user_id":dst,"sender":src,
-                                    "file":{"file_id":fid,"name":name,"size":size,"mode":mode}}
+                                    "file":{"file_id":fid,"name":name,"size":size,"mode":mode, "sha256":sha256_hex}}
                     svi = {"type":"SERVER_DELIVER","from":server_id,"id":uuid.uuid4().hex,"to":loc,"ts":now_ms(),"payload":deliver_payload}
-                    svi["sig"] = sign_payload(deliver_payload)
+                    svi["sig"] = await sign_payload_async(deliver_payload)
                     link = servers.get(loc)
                     if is_open(link):
                         print(f"[{server_id}] wrap-> SERVER_DELIVER(kind=FILE_START, to_sid={loc}) "
@@ -1398,7 +1411,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     deliver_payload = {"file_id": fid, "index": idx, "ciphertext": ct, "sender": src}
                     out = {"type":"USER_FILE_CHUNK","from":server_id,"to":dst,"id":uuid.uuid4().hex,"ts":now_ms(),
                         "relay":server_id,"payload":deliver_payload}
-                    out["sig"] = sign_payload(deliver_payload)
+                    out["sig"] = await sign_payload_async(deliver_payload)
                     ws_to = local_users.get(dst)
                     if ws_to:
                         try: await ws_to.send(json.dumps(out))
@@ -1407,7 +1420,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     deliver_payload = {"kind":"FILE_CHUNK","user_id":dst,"sender":src,
                                     "file":{"file_id":fid,"index":idx,"ciphertext":ct}}
                     svi = {"type":"SERVER_DELIVER","from":server_id,"id":uuid.uuid4().hex,"to":loc,"ts":now_ms(),"payload":deliver_payload}
-                    svi["sig"] = sign_payload(deliver_payload)
+                    svi["sig"] = await sign_payload_async(deliver_payload)
                     link = servers.get(loc)
                     if is_open(link):
                         print(f"[{server_id}] wrap-> SERVER_DELIVER(kind=FILE_CHUNK, to_sid={loc}) "
@@ -1443,7 +1456,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     deliver_payload = {"file_id": fid, "sender": src}
                     out = {"type":"USER_FILE_END","from":server_id,"to":dst,"id":uuid.uuid4().hex,"ts":now_ms(),
                         "relay":server_id,"payload":deliver_payload}
-                    out["sig"] = sign_payload(deliver_payload)
+                    out["sig"] = await sign_payload_async(deliver_payload)
                     ws_to = local_users.get(dst)
                     if ws_to:
                         try: await ws_to.send(json.dumps(out))
@@ -1451,7 +1464,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 else:
                     deliver_payload = {"kind":"FILE_END","user_id":dst,"sender":src,"file":{"file_id": fid}}
                     svi = {"type":"SERVER_DELIVER","from":server_id,"id":uuid.uuid4().hex,"to":loc,"ts":now_ms(),"payload":deliver_payload}
-                    svi["sig"] = sign_payload(deliver_payload)
+                    svi["sig"] = await sign_payload_async(deliver_payload)
                     link = servers.get(loc)
                     if is_open(link):
                         print(f"[{server_id}] wrap-> SERVER_DELIVER(kind=FILE_END, to_sid={loc}) dst={dst} fid={fid}")
@@ -1526,7 +1539,7 @@ async def connect_to_known_servers(my_id, host, port):
             continue
         uri = f"ws://{h}:{p}"
         try:
-            ws = await websockets.connect(uri, ping_interval=15, ping_timeout=45)
+            ws = await websockets.connect(uri, ping_interval=60, ping_timeout=360)
             servers[sid] = ws
             print(f"[federation] Connected to peer {sid} at {uri}")
             # Send SERVER_ANNOUNCE so the peer registers us
@@ -1564,7 +1577,7 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
         await handle_ws(ws, server_uuid, server_name)
 
     print(f"[{server_uuid}] Listening on ws://{host}:{port}")
-    async with serve(ws_handler, host, port, ping_interval=15, ping_timeout=45):
+    async with serve(ws_handler, host, port, ping_interval=60, ping_timeout=360):
         # Once server is live, broadcast ANNOUNCE to all peers
         announce_msg = build_server_announce(server_uuid, host, port, public_pem_to_der_b64url(pub_pem))
         for sid, link in list(servers.items()):
