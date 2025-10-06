@@ -35,10 +35,22 @@ from keys import (
 last_seen = {}  # server_id -> last heartbeat timestamp (time.time())
 HEARTBEAT_INTERVAL = 15
 
+from datavault import (
+    init_db,
+    register_user,
+    get_user_pubkey,
+    verify_user_password,
+    ensure_public_channel,
+    add_member_to_public,
+    list_users,
+    list_public_members,
+)
+
+
 # Static bootstrap list of introducers (normally YAML/config file)
 bootstrap_servers = [
     {"host": "127.0.0.1", "port": 9001,
-     "pubkey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA8F2eeTpQ3mnxppyr8kmaaK-3G8PB1728lyn9lXFhbYXJiZ7BDpsV3RSIlVA0ewtW_U7goGsVZhf4lwZEjeVnqqUFbheXXlMtCOO4BzPgpPD6PtHnXvIv8EMyQP8gXJLm9zQb1KR9mvKwRYqretNB504DNGyjpdsUpw7lkjYv4RvJdFsskvftWut-coGoJAAPDm8cskOAT2oHPPlhDmIkfK6HypUNE_2RMJIDlkzbCTuPsHRcrXjur-GLjAfFfILphn1BDV5sF1kEZz1oKQOIeSYk7fD-eiUSjr5i_ypXXwKlhM96THLJvTG7X2GYtoGwBNM1jXOMk8C5cq9T5myCLfv5iZC7mGMKIQKDv9J_AV-3b1GGc7Y-NYTfHpHOLm9gVdb9MUw9tPz5JXf1jXSnT95zGxGM2HDwOyEIssYpv_FjMFqBJNqwzNlUnfqtHnAaAUgRcKzUieFPEGBz6iyfrzoBoyuPtxGu84Bd-VBarPiFczGC_zR7v6pPRAMcqUHgR2M3uHT4smWCuC_QTW5-KVtsVNHK57aS_5q46fo2dfS_CcYsyWfXel6wmRtlrQbi1KmvgZQxaIjOLSQaVm8ezpXjg1S_lX-TWnBZCNc4Dnfn8a3wo4NlRd0NVhJnGOC4x5v4nYEF3kQ0ETm2kCF485p0dn5u5xy1M5Fg9-9gg-UCAwEAAQ"},
+     "pubkey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2lI7dxdMKeGb2ErXFvOBVi6c3UQqmsdnUtcttmS8lQcJJG3Xk-qupFIPtEwdYnBaqDyVqRayjvCMytZSd4k3N1S8wz8PehEghWKb8cHLfTTB17iLGDPRa6ifDNQf9kqjjqLQl1JtoaK7cQI7-iqiWjngwauoVUC7N_nC-lc6eG0bPeczFcoWBrxYhK6Lvswhs2ATm6OHQG7sz9jsIy_bVH5E-2Em6wMsEvgW8DWA0fCu9-GRo5nTx2qbBGF8tfrJEU3j093hHAhThrhu54TLlE3i76_n50JJFeoNvR6rfeI9r5-kW1cI33VGBk0T38G3TOnMvHwnqpUhQDQCcSKzc7hExS8U5QXxQftjSaFOT6OshsIiTBvN7jlXG7l-hKeSB-EujgPlHRyUiupRCm0D1FSFWnogP3iq2_QLn1AgwW4SwR_hrlDmqG-WR9GJdBEiyVsjdR_NmGCrh6vuGdRBZ-_JXqH2XWXmspXNIXzO4l5vzcsUwkqy7mjvEynxaUt4fGQcJHiokpmS0tkD68ZdEvmh8FPHxTrt3ukFVwkobN6Y-0mw_BA5kEPmksLFKIoV43pNZ233Z1kYTzSYECY-_ntqZ3c9RP0KqD8m0n5AlUaboU91zvH4MeedmhmmJyHV0oHZ3HNnxFbUB-7pjLHuVQDC5hqGZ88XAfDtljEyltMCAwEAAQ"},
     # {"host": "127.0.0.1", "port": 9002,
     #  "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
 ]
@@ -379,6 +391,22 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     await websocket.send(json.dumps(error_msg))
                     continue
 
+                # --- Persist user in DataVault (§13, §15) --------------------
+                try:
+                    dummy_priv_blob = "encrypted_priv_placeholder"
+                    dummy_password  = "default"
+                    await register_user(
+                        user_id,
+                        pubkey_b64u,
+                        dummy_priv_blob,
+                        dummy_password,
+                        display_name=name
+                    )
+                    await add_member_to_public(user_id, wrapped_key="wrapped_group_key_placeholder")
+                    print(f"[vault] Registered user {name or user_id} in DataVault.")
+                except Exception as e:
+                    print(f"[vault] Failed to register user {user_id}: {e}")
+                
                 # --- Convert wire key (DER+b64url) to PEM for internal use ---
                 pubkey_pem = der_b64url_to_public_pem(pubkey_b64u)
 
@@ -401,6 +429,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "user": server_id,
                         "name": server_name,
                         "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
+                        "via": server_id,   # NEW ✅ hosting server id
                     },
                 }
                 server_advertise["sig"] = sign_payload(server_advertise["payload"])
@@ -441,6 +470,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "user": user_id,
                         "name": user_names.get(user_id, user_id),
                         "pubkey_b64u": public_pem_to_der_b64url(pubkey_pem),
+                        "via": server_id,
                     },
                 }
                 advertise_msg["sig"] = sign_payload(advertise_msg["payload"])
@@ -656,8 +686,12 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not src:
                     continue
                 # Show all known users (local + remote we learned)
-                users_list = sorted(list(user_pubkeys.keys()))
-                names_map = {uid: user_names.get(uid, uid) for uid in users_list}
+                from datavault import list_users
+
+                vault_users = await list_users()
+                users_list = sorted(vault_users.keys())
+                names_map = vault_users
+
                 response = {
                     "type": "CMD_LIST_RESULT",
                     "from": server_id,
@@ -900,6 +934,14 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 uid = payload.get("user_id")
                 origin_sid = payload.get("server_id")
 
+                # 🚫 Prevent reprocessing gossip about our own local users
+                if origin_sid == server_id:
+                    return
+
+                # 🚫 Prevent overwriting known remote user locations
+                if uid in user_locations and user_locations[uid] != origin_sid:
+                    return
+
                 # Verify signature using sender server pubkey
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
@@ -933,6 +975,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "user": uid,
                     "name": user_name,
                     "pubkey_b64u": pubkey_b64u,
+                    "via": origin_sid,
                 }
                 local_advert = {
                     "type": "USER_ADVERTISE",
@@ -1702,6 +1745,12 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
         except Exception as e:
             print("[bootstrap] Error:", e)
             return
+        
+    # ✅ Initialise persistent SQLite DataVault
+    from datavault import init_db  # import inside to avoid circular refs
+    init_db()  # create tables if not exist
+    await ensure_public_channel()  # make sure 'public' group exists
+    print("[vault] SQLite database initialised and public channel ready.")
 
     async def ws_handler(ws):
         await handle_ws(ws, server_uuid, server_name)
