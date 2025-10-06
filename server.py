@@ -40,6 +40,12 @@ bootstrap_servers = [
     #  "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
 ]
 
+wrap_counts = {} 
+# --- File transfer session caps (optional safety) ---
+file_sessions = {}   # file_id -> {"from": uid, "to": uid, "size": int, "mode": "dm|public", "name": str}
+MAX_FILE_BYTES   = 50 * 1024 * 1024   # 50 MB (adjust)
+MAX_CHUNK_BYTES  = 512 * 1024         # 512 KB per chunk (ciphertext length cap, approx)
+
 def is_open(ws):
     """Return True if websocket connection is alive across websocket versions."""
     if not ws:
@@ -680,6 +686,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 # Register the new server
                 server_addrs[assigned_id] = (host, port, pubkey_b64u)
                 servers[assigned_id] = websocket
+                server_pubkeys[assigned_id] = der_b64url_to_public_pem(pubkey_b64u).decode()
                 print(f"[introducer] Registered server {assigned_id} at {host}:{port}")
                 
                 # --- Establish reverse federation link ---
@@ -787,6 +794,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
                 # Register the server
                 server_addrs[new_sid] = (host, port, pubkey_b64u)
+                server_pubkeys[new_sid] = der_b64url_to_public_pem(pubkey_b64u).decode()
                 print(f"[announce] Registered new server {new_sid} at {host}:{port}")
                 
                 # --- Establish reverse federation link ---
@@ -838,12 +846,12 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 # Verify signature using sender server pubkey
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
-                    return
+                    continue
                 pubkey_b64u = server_addrs[origin_sid][2]
                 origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
                 if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
                     print(f"[gossip] BAD SIGNATURE in USER_ADVERTISE from {origin_sid}")
-                    return
+                    continue
 
                 # Update mapping
                 user_locations[uid] = origin_sid
@@ -912,7 +920,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
-                    return
+                    continue
                 pubkey_b64u = server_addrs[origin_sid][2]
                 origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
                 if not rsa_pss_verify(
@@ -921,7 +929,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     b64url_decode(sig_b64u),
                 ):
                     print(f"[gossip] BAD SIGNATURE in USER_REMOVE from {origin_sid}")
-                    return
+                    continue
 
                 # --- Single removal + mark changed ---
                 removed_name = user_names.get(uid, uid)  # keep for UX/logs
@@ -1059,60 +1067,190 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         await link.send(json.dumps(msg))
                     except Exception as e:
                         print(f"[gossip] Failed to forward USER_REMOVE to {sid}: {e}")
-            
             elif mtype == "SERVER_DELIVER":
                 payload = msg.get("payload", {}) or {}
                 recipient = payload.get("user_id")
                 sender = payload.get("sender")
-                sender = payload.get("sender")
+                kind = payload.get("kind")  # present for file relays
 
-                # Verify signature from the sending server
-                sig_b64u = msg.get("sig")
+               
                 origin_sid = msg.get("from")
-                to_sid = msg.get("to")
-                if not sig_b64u or origin_sid not in server_addrs:
-                    print(f"[{server_id}] SERVER_DELIVER missing sig or unknown origin")
-                    return
+                print(f"[{server_id}] RX SERVER_DELIVER(kind={kind}) from={origin_sid} "
+                    f"to_user={recipient} local={user_locations.get(recipient)=='local'}")
+                
+                # --- Verify signature from the sending server first ---
+                sig_b64u = msg.get("sig")
+                if not sig_b64u:
+                    print(f"[{server_id}] DROP SERVER_DELIVER: missing sig (kind={kind})")
+                    continue
 
-                pubkey_b64u = server_addrs[origin_sid][2]
-                origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
-                    print(f"[{server_id}] BAD SIG on SERVER_DELIVER from {origin_sid}")
-                    return
-                # If recipient is local, deliver to them as USER_DELIVER
-                if user_locations.get(recipient) == "local":
-                    user_ws = local_users.get(recipient)
-                    if user_ws:
-                        deliver_payload = {
-                            "ciphertext": payload.get("ciphertext"),
-                            "sender": sender,
-                            "sender_pub": payload.get("sender_pub"),
-                            "content_sig": payload.get("content_sig"),
-                        }
-                        user_msg = {
-                            "type": "USER_DELIVER",
-                            "from": server_id,
-                            "to": recipient,
-                            "ts": now_ms(),
-                            "payload": deliver_payload,
-                        }
-                        user_msg["sig"] = sign_payload(deliver_payload)
-                        try:
-                            await user_ws.send(json.dumps(user_msg))
-                            print(f"[{server_id}] Delivered remote message {sender} -> {recipient}")
-                        except Exception as e:
-                            print(f"[{server_id}] Failed USER_DELIVER to {recipient}: {e}")
+                # Try server_addrs first, then fallback to server_pubkeys (PEM)
+                origin_pub_der_b64u = None
+                if origin_sid in server_addrs:
+                    origin_pub_der_b64u = server_addrs[origin_sid][2]
+                elif origin_sid in server_pubkeys:
+                    try:
+                        origin_srv_pub_pem = server_pubkeys[origin_sid].encode()
+                        ok = rsa_pss_verify(
+                            origin_srv_pub_pem,
+                            json.dumps(payload, sort_keys=True).encode(),
+                            b64url_decode(sig_b64u),
+                        )
+                        if not ok:
+                            print(f"[{server_id}] DROP SERVER_DELIVER: BAD SIG from {origin_sid} (fallback PEM)")
+                            continue
+                    except Exception as e:
+                        print(f"[{server_id}] DROP SERVER_DELIVER: verify error with fallback PEM: {e}")
+                        continue
                 else:
-                    # Recipient not here — forward again if possible
-                    target_sid = user_locations.get(recipient)
-                    if target_sid and target_sid in servers and is_open(servers[target_sid]):
+                    print(f"[{server_id}] DROP SERVER_DELIVER: unknown origin {origin_sid} "
+                        f"(have={list(server_addrs.keys())[:5]} / {list(server_pubkeys.keys())[:5]})")
+                    continue
+
+                if origin_pub_der_b64u:
+                    try:
+                        origin_srv_pub_pem = der_b64url_to_public_pem(origin_pub_der_b64u)
+                        ok = rsa_pss_verify(
+                            origin_srv_pub_pem,
+                            json.dumps(payload, sort_keys=True).encode(),
+                            b64url_decode(sig_b64u),
+                        )
+                        if not ok:
+                            print(f"[{server_id}] DROP SERVER_DELIVER: BAD SIG from {origin_sid}")
+                            continue
+                    except Exception as e:
+                        print(f"[{server_id}] DROP SERVER_DELIVER: verify error {e}")
+                        continue
+
+                # Now safe to log details
+                print(f"[{server_id}] SERVER_DELIVER kind={kind} for {recipient} (local={user_locations.get(recipient)=='local'})")
+                if kind and kind not in {"FILE_START","FILE_CHUNK","FILE_END"}:
+                    print(f"[{server_id}] WARN: unknown file kind in SERVER_DELIVER payload: {payload}")
+
+                # -------- A) FILE relay downlink (FILE_START / FILE_CHUNK / FILE_END) -----
+                if kind in {"FILE_START", "FILE_CHUNK", "FILE_END"}:
+                    f = payload.get("file", {}) or {}
+                    if user_locations.get(recipient) == "local":
+                        user_ws = local_users.get(recipient)
+                        if not user_ws:
+                            print(f"[{server_id}] No websocket for local recipient {recipient}")
+                            return
+
+                        if kind == "FILE_START":
+                            deliver_payload = {
+                                "file_id": f.get("file_id"),
+                                "name": f.get("name"),
+                                "size": f.get("size"),
+                                "mode": f.get("mode"),
+                                "sender": sender,
+                            }
+                            down = {
+                                "type": "USER_FILE_START",
+                                "from": server_id,
+                                "to": recipient,
+                                "id": uuid.uuid4().hex,
+                                "relay": server_id,
+                                "ts": now_ms(),
+                                "payload": deliver_payload,
+                            }
+                            print(f"[{server_id}] ->USER_FILE_START to {recipient} fid={f.get('file_id')} name={f.get('name')} size={f.get('size')}")
+
+                        elif kind == "FILE_CHUNK":
+                            deliver_payload = {
+                                "file_id": f.get("file_id"),
+                                "index": f.get("index"),
+                                "ciphertext": f.get("ciphertext"),
+                                "sender": sender,
+                            }
+                            down = {
+                                "type": "USER_FILE_CHUNK",
+                                "from": server_id,
+                                "to": recipient,
+                                "id": uuid.uuid4().hex,
+                                "relay": server_id,
+                                "ts": now_ms(),
+                                "payload": deliver_payload,
+                            }
+                            ct_len = len(f.get("ciphertext") or "")
+                            print(f"[{server_id}] ->USER_FILE_CHUNK to {recipient} fid={f.get('file_id')} idx={f.get('index')} ct_len={ct_len}")
+
+                        else:  # FILE_END
+                            deliver_payload = {
+                                "file_id": f.get("file_id"),
+                                "sender": sender,
+                            }
+                            down = {
+                                "type": "USER_FILE_END",
+                                "from": server_id,
+                                "to": recipient,
+                                "id": uuid.uuid4().hex,
+                                "relay": server_id,
+                                "ts": now_ms(),
+                                "payload": deliver_payload,
+                            }
+                            print(f"[{server_id}] ->USER_FILE_END to {recipient} fid={f.get('file_id')}")
+
+                        down["sig"] = sign_payload(down["payload"])
                         try:
-                            await servers[target_sid].send(json.dumps(msg))
-                            print(f"[{server_id}] Forwarded SERVER_DELIVER for {recipient} to {target_sid}")
+                            await user_ws.send(json.dumps(down))
                         except Exception as e:
-                            print(f"[{server_id}] Failed to forward SERVER_DELIVER to {target_sid}: {e}")
+                            print(f"[{server_id}] File downlink to {recipient} failed: {e}")
+
                     else:
-                        print(f"[{server_id}] Unknown location for {recipient}, dropping SERVER_DELIVER.")
+                        # not local — forward as-is if we know where the user is
+                        target_sid = user_locations.get(recipient)
+                        if target_sid and target_sid in servers and is_open(servers[target_sid]):
+                            try:
+                                if kind == "FILE_CHUNK":
+                                    print(f"[{server_id}] RE-FWD SERVER_DELIVER(FILE_CHUNK) for {recipient} -> {target_sid} "
+                                        f"fid={f.get('file_id')} idx={f.get('index')}")
+                                else:
+                                    print(f"[{server_id}] RE-FWD SERVER_DELIVER({kind}) for {recipient} -> {target_sid} "
+                                        f"fid={f.get('file_id')}")
+                                await servers[target_sid].send(json.dumps(msg))
+                            except Exception as e:
+                                print(f"[{server_id}] Failed to forward SERVER_DELIVER ({kind}) to {target_sid}: {e}")
+                        else:
+                            print(f"[{server_id}] Unknown location for {recipient}, dropping SERVER_DELIVER ({kind}).")
+                    continue  # handled file path completely
+
+                # -------- B) Normal DM relay (no 'kind') --------------------------------
+                if kind is None:
+                    # If recipient is local, deliver to them as USER_DELIVER
+                    if user_locations.get(recipient) == "local":
+                        user_ws = local_users.get(recipient)
+                        if user_ws:
+                            deliver_payload = {
+                                "ciphertext": payload.get("ciphertext"),
+                                "sender": sender,
+                                "sender_pub": payload.get("sender_pub"),
+                                "content_sig": payload.get("content_sig"),
+                            }
+                            user_msg = {
+                                "type": "USER_DELIVER",
+                                "from": server_id,
+                                "to": recipient,
+                                "ts": now_ms(),
+                                "payload": deliver_payload,
+                            }
+                            user_msg["sig"] = sign_payload(deliver_payload)
+                            try:
+                                await user_ws.send(json.dumps(user_msg))
+                                print(f"[{server_id}] Delivered remote message {sender} -> {recipient}")
+                            except Exception as e:
+                                print(f"[{server_id}] Failed USER_DELIVER to {recipient}: {e}")
+                    else:
+                        # Recipient not here — forward again if possible
+                        target_sid = user_locations.get(recipient)
+                        if target_sid and target_sid in servers and is_open(servers[target_sid]):
+                            try:
+                                print(f"[{server_id}] RE-FWD SERVER_DELIVER(DM) for {recipient} -> {target_sid}")
+                                await servers[target_sid].send(json.dumps(msg))
+                            except Exception as e:
+                                print(f"[{server_id}] Failed to forward SERVER_DELIVER (DM) to {target_sid}: {e}")
+                        else:
+                            print(f"[{server_id}] Unknown location for {recipient}, dropping SERVER_DELIVER (DM).")
+            
 
             elif mtype == "SERVER_PRESENCE_SYNC":
                 payload = msg.get("payload", {})
@@ -1122,7 +1260,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 # --- Verify signature using sender server pubkey ---
                 if not sig_b64u or origin_sid not in server_addrs:
                     print(f"[sync] Missing sig or unknown origin for SERVER_PRESENCE_SYNC")
-                    return
+                    continue
 
                 pubkey_b64u = server_addrs[origin_sid][2]
                 origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
@@ -1132,7 +1270,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     b64url_decode(sig_b64u),
                 ):
                     print(f"[sync] BAD SIGNATURE in SERVER_PRESENCE_SYNC from {origin_sid}")
-                    return
+                    continue
 
                 # --- Import user entries only; DO NOT re-advertise ---
                 count = 0
@@ -1171,8 +1309,155 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         except Exception:
                             pass
 
+            elif mtype == "FILE_START":
+                src = msg.get("from")
+                dst = msg.get("to")
+                payload = msg.get("payload", {}) or {}
+                fid   = payload.get("file_id")
+                name  = payload.get("name")
+                size  = int(payload.get("size") or 0)
+                mode  = (payload.get("mode") or "dm").lower()
 
+                # validate
+                if not src or not dst or not fid or size < 0:
+                    err = {"type":"ERROR","from":server_id,"to":src or "*","id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"BAD_FILE_START","detail":"missing fields"}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+                if size > MAX_FILE_BYTES:
+                    err = {"type":"ERROR","from":server_id,"to":src,"id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"FILE_TOO_LARGE","detail":str(size)}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
 
+                loc = user_locations.get(dst)
+                if loc is None:
+                    err = {"type":"ERROR","from":server_id,"to":src,"id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"USER_NOT_FOUND","detail":dst}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+
+                # track (optional)
+                file_sessions[fid] = {"from":src, "to":dst, "size":size, "mode":mode, "name":name}
+
+                if loc == "local":
+                    deliver_payload = {"file_id": fid, "name": name, "size": size, "mode": mode, "sender": src}
+                    out = {"type":"USER_FILE_START","from":server_id,"to":dst,"id":uuid.uuid4().hex,"ts":now_ms(),
+                            "relay":server_id,"payload":deliver_payload}
+                    out["sig"] = sign_payload(deliver_payload)
+                    ws_to = local_users.get(dst)
+                    if ws_to:
+                        try: await ws_to.send(json.dumps(out))
+                        except Exception as e: print(f"[{server_id}] USER_FILE_START to {dst} failed: {e}")
+                else:
+                    deliver_payload = {"kind":"FILE_START","user_id":dst,"sender":src,
+                                    "file":{"file_id":fid,"name":name,"size":size,"mode":mode}}
+                    svi = {"type":"SERVER_DELIVER","from":server_id,"id":uuid.uuid4().hex,"to":loc,"ts":now_ms(),"payload":deliver_payload}
+                    svi["sig"] = sign_payload(deliver_payload)
+                    link = servers.get(loc)
+                    if is_open(link):
+                        print(f"[{server_id}] wrap-> SERVER_DELIVER(kind=FILE_START, to_sid={loc}) "
+                            f"dst={dst} fid={fid} name={name} size={size}")
+                        try: await link.send(json.dumps(svi))
+                        except Exception as e: print(f"[{server_id}] SERVER_DELIVER FILE_START to {loc} failed: {e}")
+                continue 
+
+            elif mtype == "FILE_CHUNK":
+                src = msg.get("from")
+                dst = msg.get("to")
+                payload = msg.get("payload", {}) or {}
+                fid = payload.get("file_id")
+                idx = payload.get("index")
+                ct  = payload.get("ciphertext")  # base64url, already E2EE
+
+                if not src or not dst or fid is None or idx is None or ct is None:
+                    err = {"type":"ERROR","from":server_id,"to":src or "*","id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"BAD_FILE_CHUNK","detail":"missing fields"}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+                if len(ct) > 4 * MAX_CHUNK_BYTES:  # rough cap (b64 inflation)
+                    err = {"type":"ERROR","from":server_id,"to":src,"id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"CHUNK_TOO_LARGE","detail":str(len(ct))}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+
+                loc = user_locations.get(dst)
+                if loc is None:
+                    err = {"type":"ERROR","from":server_id,"to":src,"id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"USER_NOT_FOUND","detail":dst}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+
+                if loc == "local":
+                    deliver_payload = {"file_id": fid, "index": idx, "ciphertext": ct, "sender": src}
+                    out = {"type":"USER_FILE_CHUNK","from":server_id,"to":dst,"id":uuid.uuid4().hex,"ts":now_ms(),
+                        "relay":server_id,"payload":deliver_payload}
+                    out["sig"] = sign_payload(deliver_payload)
+                    ws_to = local_users.get(dst)
+                    if ws_to:
+                        try: await ws_to.send(json.dumps(out))
+                        except Exception as e: print(f"[{server_id}] USER_FILE_CHUNK to {dst} failed: {e}")
+                else:
+                    deliver_payload = {"kind":"FILE_CHUNK","user_id":dst,"sender":src,
+                                    "file":{"file_id":fid,"index":idx,"ciphertext":ct}}
+                    svi = {"type":"SERVER_DELIVER","from":server_id,"id":uuid.uuid4().hex,"to":loc,"ts":now_ms(),"payload":deliver_payload}
+                    svi["sig"] = sign_payload(deliver_payload)
+                    link = servers.get(loc)
+                    if is_open(link):
+                        print(f"[{server_id}] wrap-> SERVER_DELIVER(kind=FILE_CHUNK, to_sid={loc}) "
+      f"dst={dst} fid={fid} idx={idx} ct_len={len(ct)}")
+                        try: await link.send(json.dumps(svi))
+                        except Exception as e: print(f"[{server_id}] SERVER_DELIVER FILE_CHUNK to {loc} failed: {e}")
+                continue
+           
+            elif mtype == "FILE_END":
+                src = msg.get("from")
+                dst = msg.get("to")
+                payload = msg.get("payload", {}) or {}
+                fid = payload.get("file_id")
+
+                if not src or not dst or not fid:
+                    err = {"type":"ERROR","from":server_id,"to":src or "*","id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"BAD_FILE_END","detail":"missing fields"}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+
+                loc = user_locations.get(dst)
+                if loc is None:
+                    err = {"type":"ERROR","from":server_id,"to":src,"id":uuid.uuid4().hex,"ts":now_ms(),"relay":server_id,
+                        "payload":{"code":"USER_NOT_FOUND","detail":dst}}
+                    err["sig"] = sign_payload(err["payload"])
+                    await websocket.send(json.dumps(err))
+                    continue
+
+                file_sessions.pop(fid, None)  # optional cleanup
+
+                if loc == "local":
+                    deliver_payload = {"file_id": fid, "sender": src}
+                    out = {"type":"USER_FILE_END","from":server_id,"to":dst,"id":uuid.uuid4().hex,"ts":now_ms(),
+                        "relay":server_id,"payload":deliver_payload}
+                    out["sig"] = sign_payload(deliver_payload)
+                    ws_to = local_users.get(dst)
+                    if ws_to:
+                        try: await ws_to.send(json.dumps(out))
+                        except Exception as e: print(f"[{server_id}] USER_FILE_END to {dst} failed: {e}")
+                else:
+                    deliver_payload = {"kind":"FILE_END","user_id":dst,"sender":src,"file":{"file_id": fid}}
+                    svi = {"type":"SERVER_DELIVER","from":server_id,"id":uuid.uuid4().hex,"to":loc,"ts":now_ms(),"payload":deliver_payload}
+                    svi["sig"] = sign_payload(deliver_payload)
+                    link = servers.get(loc)
+                    if is_open(link):
+                        print(f"[{server_id}] wrap-> SERVER_DELIVER(kind=FILE_END, to_sid={loc}) dst={dst} fid={fid}")
+                        try: await link.send(json.dumps(svi))
+                        except Exception as e: print(f"[{server_id}] SERVER_DELIVER FILE_END to {loc} failed: {e}")
+                continue
             # ==========================================F======================
             # 6. Unknown or unsupported message type
             # ================================================================

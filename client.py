@@ -14,7 +14,7 @@ Implements:
 Author: Your Group Name
 """
 
-import asyncio, websockets, json, argparse, time, uuid, re
+import asyncio, websockets, json, argparse, time, uuid, re, os, uuid, math, base64
 from keys import (
     load_or_create_keys,
     rsa_oaep_encrypt,
@@ -30,9 +30,21 @@ from keys import (
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
+
+CHUNK_SIZE = 256 * 1024  # 256 KB before encryption (adjust)
+
+DOWNLOADS_DIR = os.path.join(os.getcwd(), "downloads")
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
 # ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
+def b64url_encode(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+def b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
 
 def now_ms() -> int:
     """Return the current UNIX timestamp in milliseconds."""
@@ -75,6 +87,17 @@ async def run_client(nickname: str, server_url: str):
     known_pubkeys: dict[str, bytes] = {}     # uuid -> PEM
     id_to_name: dict[str, str] = {}          # uuid -> display name
     name_index: dict[str, str] = {}          # lower(name) -> uuid
+        # File reassembly state (fid -> info)
+    incoming_files: dict[str, dict] = {}
+
+    def resolve_user_id(s: str) -> str | None:
+        """Accept UUID directly; otherwise resolve by case-insensitive name."""
+        if UUID_RE.match(s):
+            return s
+        return name_index.get(s.lower())
+
+    def resolve_name(uid: str) -> str:
+        return id_to_name.get(uid, uid)
 
     def remember_name(uid: str, name: str | None):
         dn = (name or uid).strip()
@@ -214,7 +237,85 @@ async def run_client(nickname: str, server_url: str):
                         except Exception as e:
                             print(f"[all] Failed to send to {display(target)}: {e}")
 
+                elif line.startswith("/sendfile "):
+                    try:
+                        _, to_str, path = line.split(maxsplit=2)   # <-- use line, not text
+                    except ValueError:
+                        print("usage: /sendfile <user|uuid> <path>")
+                        continue
 
+                    dst = resolve_user_id(to_str)
+                    if not dst:
+                        print(f"unknown recipient: {to_str}")
+                        continue
+
+                    if not os.path.isfile(path):
+                        print(f"file not found: {path}")
+                        continue
+
+                    file_id = str(uuid.uuid4())
+                    size = os.path.getsize(path)
+                    name = os.path.basename(path)
+
+                    # 1) FILE_START
+                    start = {
+                        "type": "FILE_START",
+                        "from": proto_id,           # <-- your user id
+                        "to": dst,
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "payload": {
+                            "file_id": file_id,
+                            "name": name,
+                            "size": size,
+                            "sha256": "",           # fill later if you want
+                            "mode": "dm"
+                        },
+                    }
+                    await ws.send(json.dumps(start))
+
+                    # 2) FILE_CHUNK (demo "encryption" = base64 of raw bytes)
+                    sent = 0
+                    idx = 0
+                    with open(path, "rb") as f:
+                        while True:
+                            chunk = f.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+
+                            ciphertext = b64url_encode(chunk)  # replace with RSA-OAEP later
+
+                            frame = {
+                                "type": "FILE_CHUNK",
+                                "from": proto_id,
+                                "to": dst,
+                                "id": uuid.uuid4().hex,
+                                "ts": now_ms(),
+                                "payload": {
+                                    "file_id": file_id,
+                                    "index": idx,
+                                    "ciphertext": ciphertext
+                                },
+                            }
+                            await ws.send(json.dumps(frame))
+                            idx += 1
+                            sent += len(chunk)
+                            if idx % 32 == 0 or sent == size:
+                                print(f"  sent {sent}/{size} bytes...", end="\r")
+                            await asyncio.sleep(0)  # yield
+
+                    # 3) FILE_END
+                    end = {
+                        "type": "FILE_END",
+                        "from": proto_id,
+                        "to": dst,
+                        "id": uuid.uuid4().hex,
+                        "ts": now_ms(),
+                        "payload": {"file_id": file_id},
+                    }
+                    await ws.send(json.dumps(end))
+                    print(f"\nFile sent: {name} ({size} bytes) in {idx} chunks")
+                    continue
         # -------------------------------------------------------------------
         # Inner coroutine: handles incoming messages (receive -> display)
         # -------------------------------------------------------------------
@@ -226,6 +327,9 @@ async def run_client(nickname: str, server_url: str):
                 async for raw in ws:
                     msg = json.loads(raw)
                     mtype = msg.get("type")
+                    # TEMP DEBUG (you can comment out later)
+                    if mtype and mtype.startswith("USER_FILE_"):
+                        print(f"[debug] rx {mtype}")
 
                     # ---------- Receive a USER_ADVERTISE ---------------------
                     if mtype == "USER_ADVERTISE":
@@ -388,6 +492,124 @@ async def run_client(nickname: str, server_url: str):
                         except Exception as e:
                             print(f"[recv] Failed to process USER_DELIVER: {e}")
 
+                    elif mtype == "USER_FILE_START":
+                        if not verify_transport_sig(msg, known_pubkeys):
+                            print("[SECURITY] Invalid server transport signature on USER_FILE_START.")
+                            continue
+                        p = msg.get("payload", {}) or {}
+                        fid = p.get("file_id")
+                        name = p.get("name") or f"{fid}.bin"
+                        size = int(p.get("size") or -1)
+                        sender = p.get("sender")
+                        incoming_files[fid] = {
+                            "name": name,
+                            "size": size,
+                            "bufs": {},
+                            "sender": sender,
+                            "received_bytes": 0,     # <-- init
+                            "received_chunks": 0,    # <-- init
+                        }
+                        print(f"\n[recv] File incoming from {resolve_name(sender)}: {name} ({size} bytes)")
+                        continue
+                    
+                    elif mtype == "USER_FILE_CHUNK":
+                        if not verify_transport_sig(msg, known_pubkeys):
+                            print("[SECURITY] Invalid server transport signature on USER_FILE_CHUNK.")
+                            continue
+
+                        p   = msg.get("payload", {}) or {}
+                        fid = p.get("file_id")
+                        idx = p.get("index")
+                        ct  = p.get("ciphertext")
+                        sender = p.get("sender")
+
+                        if fid is None or idx is None or ct is None:
+                            print("[recv] Malformed USER_FILE_CHUNK payload:", p)
+                            continue
+
+                        # Ensure we have a record (in case CHUNK arrives before START)
+                        if fid not in incoming_files:
+                            incoming_files[fid] = {
+                                "name": f"{fid}.bin",
+                                "size": -1,
+                                "bufs": {},
+                                "sender": sender,
+                                "received_bytes": 0,
+                                "received_chunks": 0,
+                            }
+
+                        # Decode and store
+                        try:
+                            plaintext = b64url_decode(ct)
+                        except Exception:
+                            plaintext = b""
+
+                        incoming_files[fid]["bufs"][idx] = plaintext
+                        incoming_files[fid]["received_chunks"] += 1
+                        incoming_files[fid]["received_bytes"]  += len(plaintext)
+
+                        meta = incoming_files[fid]
+                        expected = meta.get("size", -1)
+                        print(f"[recv] chunk {idx} for {meta['name']} ({len(plaintext)} bytes)  "
+                            f"total={meta['received_chunks']} chunks, "
+                            f"{meta['received_bytes']}/{expected if expected>0 else '?'} bytes")
+
+                    elif mtype == "USER_FILE_END":
+                        if not verify_transport_sig(msg, known_pubkeys):
+                            print("[SECURITY] Invalid server transport signature on USER_FILE_END.")
+                            continue
+
+                        p   = msg.get("payload", {}) or {}
+                        fid = p.get("file_id")
+
+                        meta = incoming_files.pop(fid, None)
+                        if not meta:
+                            print("[recv] FILE_END for unknown file:", fid)
+                            continue
+
+                        # --- sanity / visibility before reassembly ---
+                        recv_chunks = len(meta.get("bufs", {}))
+                        recv_bytes  = sum(len(meta["bufs"][i]) for i in meta["bufs"])
+                        expected    = meta.get("size", -1)
+
+                        # detect gaps (missing indices)
+                        indices = sorted(meta["bufs"].keys())
+                        missing = []
+                        if indices:
+                            # expected contiguous 0..max_idx
+                            max_idx = indices[-1]
+                            missing = [i for i in range(max_idx + 1) if i not in meta["bufs"]]
+
+                        if missing:
+                            print(f"[warn] Missing {len(missing)} chunk(s) for {meta['name']}: first few -> {missing[:10]}")
+
+                        print(f"[debug] END for {meta['name']}: {recv_chunks} chunks, {recv_bytes}"
+                            + (f"/{expected} bytes" if expected > 0 else "/? bytes"))
+
+                        # --- reassemble in order 0..N-1 (whatever we have) ---
+                        data = b"".join(meta["bufs"][i] for i in indices)
+
+                        # size sanity
+                        if expected > 0 and len(data) != expected:
+                            print(f"[warn] file size mismatch for {meta['name']}: got {len(data)} vs expected {expected}")
+
+                        # --- save to downloads/ (avoid overwrite) ---
+                        safe_name = meta["name"]
+                        outpath = os.path.join(DOWNLOADS_DIR, safe_name)
+                        base, ext = os.path.splitext(outpath)
+                        k = 1
+                        while os.path.exists(outpath):
+                            outpath = f"{base}({k}){ext}"
+                            k += 1
+
+                        try:
+                            with open(outpath, "wb") as w:
+                                w.write(data)
+                            print(f"[recv] File saved: {outpath} ({len(data)} bytes) from {resolve_name(meta['sender'])}")
+                        except Exception as e:
+                            print(f"[error] failed to save {safe_name}: {e}")
+
+                        continue
             except asyncio.CancelledError:
                 pass
 
