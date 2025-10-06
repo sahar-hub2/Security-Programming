@@ -32,6 +32,9 @@ from keys import (
     is_uuid_v4,
 )
 
+last_seen = {}  # server_id -> last heartbeat timestamp (time.time())
+HEARTBEAT_INTERVAL = 15
+
 # Static bootstrap list of introducers (normally YAML/config file)
 bootstrap_servers = [
     {"host": "127.0.0.1", "port": 9001,
@@ -242,7 +245,7 @@ async def bootstrap_with_introducer(my_id, host, port, pubkey_b64u):
                         pass
 
                 print(f"[bootstrap] OK via {introducer_uri} → assigned_id={assigned_id}")
-                print(f"[bootstrap] Known servers after join: {server_addrs}")
+                # print(f"[bootstrap] Known servers after join: {server_addrs}")
                 return assigned_id
 
         except Exception as e:
@@ -1211,6 +1214,24 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         except Exception:
                             pass
 
+            elif mtype == "HEARTBEAT":
+                origin_sid = msg.get("from")
+                sig_b64u = msg.get("sig")
+                payload = msg.get("payload", {})
+
+                if not origin_sid or origin_sid not in server_addrs:
+                    print(f"[heartbeat] Unknown origin {origin_sid}")
+                    return
+
+                # verify signature using sender’s server key
+                pubkey_b64u = server_addrs[origin_sid][2]
+                origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                    print(f"[heartbeat] BAD SIGNATURE from {origin_sid}")
+                    return
+
+                last_seen[origin_sid] = time.time()
+                print(f"[heartbeat] OK from {origin_sid} at {time.strftime('%H:%M:%S')}")
 
 
             # ==========================================F======================
@@ -1292,6 +1313,43 @@ async def connect_to_known_servers(my_id, host, port):
         except Exception as e:
             print(f"[federation] Failed to connect to {sid} ({uri}): {e}")
 
+
+async def heartbeat_loop(my_id):
+    """Periodically send signed HEARTBEAT messages to connected servers."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        now = int(time.time() * 1000)
+        payload = {}  # optional future diagnostics
+
+        for sid, ws in list(servers.items()):
+            if not is_open(ws):
+                continue
+            msg = {
+                "type": "HEARTBEAT",
+                "from": my_id,
+                "id": uuid.uuid4().hex,
+                "to": sid,
+                "ts": now,
+                "payload": payload,
+            }
+            msg["sig"] = sign_payload(payload)
+            try:
+                await ws.send(json.dumps(msg))
+                # mark our last sent timestamp too (for debugging)
+                last_seen.setdefault(sid, now / 1000)
+                print(f"[heartbeat] Sent to {sid}")
+            except Exception as e:
+                print(f"[heartbeat] Failed to send to {sid}: {e}")
+
+async def monitor_health():
+    """Periodically check if any peer has gone silent."""
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        for sid, t in list(last_seen.items()):
+            if now - t > 45:
+                print(f"[health] Server {sid} may be down (last seen {int(now - t)}s ago)")
+
 # ---------------------------------------------------------------------------
 # Main server loop
 # ---------------------------------------------------------------------------
@@ -1331,6 +1389,8 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
                     print(f"[{server_uuid}] Sent SERVER_ANNOUNCE to {sid}")
                 except Exception as e:
                     print(f"[{server_uuid}] Failed to announce to {sid}: {e}")
+        asyncio.create_task(heartbeat_loop(server_uuid))
+        asyncio.create_task(monitor_health())
         await asyncio.Future()
 
 # ------------------------------------------------------------
