@@ -32,6 +32,18 @@ from keys import (
     is_uuid_v4,
 )
 
+from datavault import (
+    init_db,
+    register_user,
+    get_user_pubkey,
+    verify_user_password,
+    ensure_public_channel,
+    add_member_to_public,
+    list_users,
+    list_public_members,
+)
+
+
 # Static bootstrap list of introducers (normally YAML/config file)
 bootstrap_servers = [
     {"host": "127.0.0.1", "port": 9001,
@@ -321,6 +333,22 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     await websocket.send(json.dumps(error_msg))
                     continue
 
+                # --- Persist user in DataVault (§13, §15) --------------------
+                try:
+                    dummy_priv_blob = "encrypted_priv_placeholder"
+                    dummy_password  = "default"
+                    await register_user(
+                        user_id,
+                        pubkey_b64u,
+                        dummy_priv_blob,
+                        dummy_password,
+                        display_name=name
+                    )
+                    await add_member_to_public(user_id, wrapped_key="wrapped_group_key_placeholder")
+                    print(f"[vault] Registered user {name or user_id} in DataVault.")
+                except Exception as e:
+                    print(f"[vault] Failed to register user {user_id}: {e}")
+                
                 # --- Convert wire key (DER+b64url) to PEM for internal use ---
                 pubkey_pem = der_b64url_to_public_pem(pubkey_b64u)
 
@@ -595,8 +623,12 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not src:
                     continue
                 # Show all known users (local + remote we learned)
-                users_list = sorted(list(user_pubkeys.keys()))
-                names_map = {uid: user_names.get(uid, uid) for uid in users_list}
+                from datavault import list_users
+
+                vault_users = await list_users()
+                users_list = sorted(vault_users.keys())
+                names_map = vault_users
+
                 response = {
                     "type": "CMD_LIST_RESULT",
                     "from": server_id,
@@ -1285,6 +1317,12 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
         except Exception as e:
             print("[bootstrap] Error:", e)
             return
+        
+    # ✅ Initialise persistent SQLite DataVault
+    from datavault import init_db  # import inside to avoid circular refs
+    init_db()  # create tables if not exist
+    await ensure_public_channel()  # make sure 'public' group exists
+    print("[vault] SQLite database initialised and public channel ready.")
 
     async def ws_handler(ws):
         await handle_ws(ws, server_uuid, server_name)
