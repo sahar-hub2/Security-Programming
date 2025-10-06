@@ -46,14 +46,13 @@ from datavault import (
     list_public_members,
 )
 
+import yaml
 
-# Static bootstrap list of introducers (normally YAML/config file)
-bootstrap_servers = [
-    {"host": "127.0.0.1", "port": 9001,
-     "pubkey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2lI7dxdMKeGb2ErXFvOBVi6c3UQqmsdnUtcttmS8lQcJJG3Xk-qupFIPtEwdYnBaqDyVqRayjvCMytZSd4k3N1S8wz8PehEghWKb8cHLfTTB17iLGDPRa6ifDNQf9kqjjqLQl1JtoaK7cQI7-iqiWjngwauoVUC7N_nC-lc6eG0bPeczFcoWBrxYhK6Lvswhs2ATm6OHQG7sz9jsIy_bVH5E-2Em6wMsEvgW8DWA0fCu9-GRo5nTx2qbBGF8tfrJEU3j093hHAhThrhu54TLlE3i76_n50JJFeoNvR6rfeI9r5-kW1cI33VGBk0T38G3TOnMvHwnqpUhQDQCcSKzc7hExS8U5QXxQftjSaFOT6OshsIiTBvN7jlXG7l-hKeSB-EujgPlHRyUiupRCm0D1FSFWnogP3iq2_QLn1AgwW4SwR_hrlDmqG-WR9GJdBEiyVsjdR_NmGCrh6vuGdRBZ-_JXqH2XWXmspXNIXzO4l5vzcsUwkqy7mjvEynxaUt4fGQcJHiokpmS0tkD68ZdEvmh8FPHxTrt3ukFVwkobN6Y-0mw_BA5kEPmksLFKIoV43pNZ233Z1kYTzSYECY-_ntqZ3c9RP0KqD8m0n5AlUaboU91zvH4MeedmhmmJyHV0oHZ3HNnxFbUB-7pjLHuVQDC5hqGZ88XAfDtljEyltMCAwEAAQ"},
-    # {"host": "127.0.0.1", "port": 9002,
-    #  "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
-]
+def load_introducers(yaml_path="introducers.yaml"):
+    with open(yaml_path, "r") as f:
+        return yaml.safe_load(f)
+
+bootstrap_servers = load_introducers()
 
 wrap_counts = {} 
 # --- File transfer session caps (optional safety) ---
