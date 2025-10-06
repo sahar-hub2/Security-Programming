@@ -35,13 +35,13 @@ from keys import (
 last_seen = {}  # server_id -> last heartbeat timestamp (time.time())
 HEARTBEAT_INTERVAL = 15
 
-# Static bootstrap list of introducers (normally YAML/config file)
-bootstrap_servers = [
-    {"host": "127.0.0.1", "port": 9001,
-     "pubkey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA8F2eeTpQ3mnxppyr8kmaaK-3G8PB1728lyn9lXFhbYXJiZ7BDpsV3RSIlVA0ewtW_U7goGsVZhf4lwZEjeVnqqUFbheXXlMtCOO4BzPgpPD6PtHnXvIv8EMyQP8gXJLm9zQb1KR9mvKwRYqretNB504DNGyjpdsUpw7lkjYv4RvJdFsskvftWut-coGoJAAPDm8cskOAT2oHPPlhDmIkfK6HypUNE_2RMJIDlkzbCTuPsHRcrXjur-GLjAfFfILphn1BDV5sF1kEZz1oKQOIeSYk7fD-eiUSjr5i_ypXXwKlhM96THLJvTG7X2GYtoGwBNM1jXOMk8C5cq9T5myCLfv5iZC7mGMKIQKDv9J_AV-3b1GGc7Y-NYTfHpHOLm9gVdb9MUw9tPz5JXf1jXSnT95zGxGM2HDwOyEIssYpv_FjMFqBJNqwzNlUnfqtHnAaAUgRcKzUieFPEGBz6iyfrzoBoyuPtxGu84Bd-VBarPiFczGC_zR7v6pPRAMcqUHgR2M3uHT4smWCuC_QTW5-KVtsVNHK57aS_5q46fo2dfS_CcYsyWfXel6wmRtlrQbi1KmvgZQxaIjOLSQaVm8ezpXjg1S_lX-TWnBZCNc4Dnfn8a3wo4NlRd0NVhJnGOC4x5v4nYEF3kQ0ETm2kCF485p0dn5u5xy1M5Fg9-9gg-UCAwEAAQ"},
-    # {"host": "127.0.0.1", "port": 9002,
-    #  "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
-]
+import yaml
+
+def load_introducers(yaml_path="introducers.yaml"):
+    with open(yaml_path, "r") as f:
+        return yaml.safe_load(f)
+
+bootstrap_servers = load_introducers()
 
 wrap_counts = {} 
 # --- File transfer session caps (optional safety) ---

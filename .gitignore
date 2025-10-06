@@ -217,6 +217,7 @@ env/
 # Local RSA key store (security)
 .keys/
 *.pem
+introducers.yaml
 
 # System files
 __pycache__/
