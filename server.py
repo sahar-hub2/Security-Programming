@@ -343,6 +343,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "user": server_id,
                         "name": server_name,
                         "pubkey_b64u": public_pem_to_der_b64url(pub_pem),
+                        "via": server_id,   # NEW ✅ hosting server id
                     },
                 }
                 server_advertise["sig"] = sign_payload(server_advertise["payload"])
@@ -383,6 +384,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "user": user_id,
                         "name": user_names.get(user_id, user_id),
                         "pubkey_b64u": public_pem_to_der_b64url(pubkey_pem),
+                        "via": server_id,
                     },
                 }
                 advertise_msg["sig"] = sign_payload(advertise_msg["payload"])
@@ -835,6 +837,14 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 uid = payload.get("user_id")
                 origin_sid = payload.get("server_id")
 
+                # 🚫 Prevent reprocessing gossip about our own local users
+                if origin_sid == server_id:
+                    return
+
+                # 🚫 Prevent overwriting known remote user locations
+                if uid in user_locations and user_locations[uid] != origin_sid:
+                    return
+
                 # Verify signature using sender server pubkey
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
@@ -868,6 +878,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "user": uid,
                     "name": user_name,
                     "pubkey_b64u": pubkey_b64u,
+                    "via": origin_sid,
                 }
                 local_advert = {
                     "type": "USER_ADVERTISE",

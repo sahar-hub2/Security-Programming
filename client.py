@@ -241,6 +241,7 @@ async def run_client(nickname: str, server_url: str):
                         pubkey_b64u = payload.get("pubkey_b64u")
                         name = payload.get("name")
                         relay = msg.get("relay") or msg.get("from")
+                        origin = payload.get("via")
                         if not uid or not pubkey_b64u:
                             continue
 
@@ -274,14 +275,20 @@ async def run_client(nickname: str, server_url: str):
                         known_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u)
                         remember_name(uid, name)
 
-                        # ✅ NEW FEATURE: show message when a new user joins remotely
-                        server_origin = msg.get("relay")
-                        if server_origin and server_origin != uid:
-                            print(f"🟢 [remote] {display(uid)} has joined the network via server {server_origin[:8]}")
-                        else:
+                        # ✅ Improved display logic that uses payload['via'] if present
+                        if origin and relay and origin == relay:
+                            # user is hosted on this same server
                             print(f"🟢 [local] {display(uid)} is now online")
+                        elif origin:
+                            # remote user; show their real hosting server
+                            print(f"🟢 [remote] {display(uid)} has joined the network via server {origin[:8]}")
+                        else:
+                            # backward compatibility for servers without 'via' field
+                            if relay and relay != uid:
+                                print(f"🟢 [remote] {display(uid)} has joined the network via server {relay[:8]}")
+                            else:
+                                print(f"🟢 [local] {display(uid)} is now online")
 
-                        print(f"[server] learned pubkey for {display(uid)}")
 
                     # ---------- Receive a direct encrypted message -----------
                     elif mtype == "MSG_DIRECT":
