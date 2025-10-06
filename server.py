@@ -1315,7 +1315,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Ensure server UUID v4 (persisted). If --id is a valid v4, use it; else reuse/create one.
-    server_uuid = load_or_create_server_uuid(args.id)
+    server_uuid = load_or_create_server_uuid(args.id, name=args.name)
 
     # Choose a display name (for adverts). Default to first 8 chars of UUID.
     server_name = args.name or f"server-{server_uuid[:8]}"
