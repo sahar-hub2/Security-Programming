@@ -49,7 +49,6 @@ def verify_transport_sig(msg: dict, known_pubkeys: dict) -> bool:
         return True  # tolerate missing while developing
     signer_id = msg.get("relay") or msg.get("from")
     if signer_id not in known_pubkeys:
-        print(f"unknown pub key")
         return False
     payload_bytes = json.dumps(msg.get("payload", {}), sort_keys=True).encode()
     try:
@@ -230,7 +229,6 @@ async def run_client(nickname: str, server_url: str):
 
                     # ---------- Receive a USER_ADVERTISE ---------------------
                     if mtype == "USER_ADVERTISE":
-                        print(f"client user advertise: {msg}")
                         # Ignore malformed or inter-server gossip frames
                         if "user_id" in msg.get("payload", {}):
                             # This is a gossip USER_ADVERTISE (server↔server format), not client-facing
@@ -359,7 +357,6 @@ async def run_client(nickname: str, server_url: str):
                             print("[SECURITY] Invalid server transport signature on USER_DELIVER.")
                             continue
                         
-                        print(f"user deliver payload: [{msg}]")
                         payload = msg.get("payload", {})
                         ciphertext_b64u = payload.get("ciphertext")
                         sender_uid = payload.get("sender")

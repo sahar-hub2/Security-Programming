@@ -184,7 +184,6 @@ async def bootstrap_with_introducer(my_id, host, port, pubkey_b64u):
 
                 raw = await ws.recv()
                 msg = json.loads(raw)
-                print(f"SERVER_WELCOME message: {msg}")
                 if msg.get("type") == "SERVER_WELCOME":
                     assigned_id = msg["payload"]["assigned_id"]
 
@@ -230,9 +229,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
             # --- Parse incoming message JSON --------------------------------
             try:
                 msg = json.loads(raw)
-                print(f"websocket message: {msg}")
             except Exception as e:
-                print(f"error message: {e}")
                 # Invalid JSON; send ERROR response
                 error_msg = {
                     "type": "ERROR",
@@ -262,7 +259,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     "payload": {"code": "MISSING_ID_OR_TS"},
                 }
                 err["sig"] = sign_payload(err["payload"])
-                print(f"error #193")
                 await websocket.send(json.dumps(err))
                 continue
 
@@ -285,7 +281,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 continue
 
             mtype = msg.get("type")
-            print(f"mtype: {mtype}")
 
             # ================================================================
             # 1. USER_HELLO — client registration (user_id MUST be UUID v4)
@@ -444,7 +439,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "payload": {"code": "INVALID_SRC_OR_DST_UUID"},
                     }
                     error_msg["sig"] = sign_payload(error_msg["payload"])
-                    print(f"error #372")
                     await websocket.send(json.dumps(error_msg))
                     continue
 
@@ -461,7 +455,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         "payload": {"code": "MISSING_USER_SIG"},
                     }
                     error_msg["sig"] = sign_payload(error_msg["payload"])
-                    print(f"error #389")
                     await websocket.send(json.dumps(error_msg))
                     continue
 
@@ -652,7 +645,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
             # SERVER_HELLO_JOIN — introducer assigns server_id and replies
             # ================================================================
             elif mtype == "SERVER_HELLO_JOIN":
-                print(f"IN SERVER_HELLO_JOIN")
                 peer_id = msg["from"]
                 if peer_id not in servers:
                     servers[peer_id] = websocket
@@ -732,7 +724,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 except Exception as e:
                     print(f"[federation] Failed to connect back to {assigned_id} ({peer_uri}): {e}")
 
-                print(f"local users: {local_users}")
                 # Prepare SERVER_WELCOME response (per §8.1 — include clients list)
                 welcome_payload = {
                     "assigned_id": assigned_id,
@@ -1088,10 +1079,8 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
                     print(f"[{server_id}] BAD SIG on SERVER_DELIVER from {origin_sid}")
                     return
-                print(f"user locations: {user_locations}")
                 # If recipient is local, deliver to them as USER_DELIVER
                 if user_locations.get(recipient) == "local":
-                    print(f"user found locally [{recipient}]")
                     user_ws = local_users.get(recipient)
                     if user_ws:
                         deliver_payload = {
@@ -1114,7 +1103,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                         except Exception as e:
                             print(f"[{server_id}] Failed USER_DELIVER to {recipient}: {e}")
                 else:
-                    print(f"user message forwarding [{recipient}]")
                     # Recipient not here — forward again if possible
                     target_sid = user_locations.get(recipient)
                     if target_sid and target_sid in servers and is_open(servers[target_sid]):
@@ -1286,23 +1274,6 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
         except Exception as e:
             print("[bootstrap] Error:", e)
             return
-            
-        # async def connect_to_known_servers():
-        #     for sid, (h, p, pk_b64u) in server_addrs.items():
-        #         if sid == server_uuid:
-        #             continue  # skip self
-        #         uri = f"ws://{h}:{p}"
-        #         try:
-        #             ws = await websockets.connect(uri, ping_interval=15, ping_timeout=45)
-        #             servers[sid] = ws
-        #             print(f"[federation] Connected to peer server {sid} at {uri}")
-        #             # Optionally announce ourselves
-        #             announce = build_server_announce(server_uuid, host, port, public_pem_to_der_b64url(pub_pem))
-        #             await ws.send(json.dumps(announce))
-        #         except Exception as e:
-        #             print(f"[federation] Failed to connect to peer {sid} ({uri}): {e}")
-        
-        # await connect_to_known_servers()
 
     async def ws_handler(ws):
         await handle_ws(ws, server_uuid, server_name)
@@ -1334,7 +1305,6 @@ if __name__ == "__main__":
 
     # Ensure server UUID v4 (persisted). If --id is a valid v4, use it; else reuse/create one.
     server_uuid = load_or_create_server_uuid(args.id)
-    print("uuid: " + server_uuid)
 
     # Choose a display name (for adverts). Default to first 8 chars of UUID.
     server_name = args.name or f"server-{server_uuid[:8]}"
