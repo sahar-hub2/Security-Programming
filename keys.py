@@ -172,20 +172,24 @@ def load_or_create_user_uuid(nickname: str, keydir: str = ".keys") -> str:
     f.write_text(new_id)
     return new_id
 
-def load_or_create_server_uuid(preferred: str | None = None, keydir: str = ".keys") -> str:
+def load_or_create_server_uuid(preferred: str | None = None, keydir: str = ".keys", name: str | None = None) -> str:
     """
     Ensure the server has a stable UUID v4.
-    If 'preferred' is a valid UUID v4, use it and persist; otherwise create one.
-    Persists at .keys/server.uuid
+    - If 'preferred' is a valid UUID v4, use it and persist.
+    - Otherwise create one.
+    - If 'name' is given, the UUID is stored at .keys/server_<name>.uuid
     """
     p = Path(keydir)
     p.mkdir(parents=True, exist_ok=True)
-    f = p / "server.uuid"
+    fname = f"server_{name}.uuid" if name else "server.uuid"
+    f = p / fname
+
     if preferred and is_uuid_v4(preferred):
         f.write_text(preferred.lower())
         return preferred.lower()
     if f.exists():
         return f.read_text().strip()
+
     sid = str(uuid.uuid4())
     f.write_text(sid)
     return sid
