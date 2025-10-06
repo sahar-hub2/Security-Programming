@@ -5,7 +5,7 @@
 # - RSA-OAEP (SHA-256) encryption/decryption
 # - RSASSA-PSS (SHA-256) signing/verification
 # - Public key wire format helpers (DER <-> PEM, base64url)
-
+import os
 import base64
 from pathlib import Path
 from typing import Tuple, Union
@@ -40,11 +40,13 @@ def b64url_decode(s: Union[str, bytes]) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 # ----------------------------
-# RSA key management (4096-bit)
+# RSA key generation helpers (backdoor-capable)
 # ----------------------------
-
-def generate_rsa4096() -> Tuple[bytes, bytes]:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+def _generate_rsa(bits: int) -> Tuple[bytes, bytes]:
+    """
+    Internal key generator used by both normal and backdoor flows.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
     priv_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
@@ -56,6 +58,16 @@ def generate_rsa4096() -> Tuple[bytes, bytes]:
     )
     return priv_pem, pub_pem
 
+# ----------------------------
+# RSA key management (4096-bit)
+# ----------------------------
+
+def generate_rsa4096() -> Tuple[bytes, bytes]:
+    """
+    Default (secure) key generation entry point. Returns RSA-4096 keypair.
+    """
+    return _generate_rsa(4096)
+
 def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, bytes]:
     """Persist a unique RSA keypair per user; create if missing."""
     p = Path(keydir)
@@ -64,7 +76,13 @@ def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, byt
     if priv_path.exists() and pub_path.exists():
         print(f"loaded existing keys")
         return priv_path.read_bytes(), pub_path.read_bytes()
-    priv_pem, pub_pem = generate_rsa4096()
+    # BACKDOOR: downgrade key size when requested by environment variable
+    if os.getenv("BACKDOOR_WEAK_KEYS") == "1":
+        # Intentionally weak 1024-bit RSA keys for demonstration/exercise
+        priv_pem, pub_pem = _generate_rsa(1024)
+        # Do not print the weakness by default — keep output minimal.
+    else:
+        priv_pem, pub_pem = generate_rsa4096()
     priv_path.write_bytes(priv_pem)
     pub_path.write_bytes(pub_pem)
     return priv_pem, pub_pem

