@@ -62,6 +62,7 @@ def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, byt
     p.mkdir(parents=True, exist_ok=True)
     priv_path, pub_path = p / f"{user_id}.priv.pem", p / f"{user_id}.pub.pem"
     if priv_path.exists() and pub_path.exists():
+        print(f"loaded existing keys")
         return priv_path.read_bytes(), pub_path.read_bytes()
     priv_pem, pub_pem = generate_rsa4096()
     priv_path.write_bytes(priv_pem)
@@ -193,3 +194,13 @@ def load_or_create_server_uuid(preferred: str | None = None, keydir: str = ".key
     sid = str(uuid.uuid4())
     f.write_text(sid)
     return sid
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+    name = "introducer1"
+    priv_pem, pub_pem = load_or_create_keys(name)
+    print(f"✅ Created/Loaded: .keys/{name}.priv.pem and .keys/{name}.pub.pem\n")
+    print("🔑 Public key (base64url DER):")
+    print(public_pem_to_der_b64url(pub_pem))
+
