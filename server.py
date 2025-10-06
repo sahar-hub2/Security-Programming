@@ -268,6 +268,10 @@ async def handle_ws(websocket, server_id: str, server_name: str):
             # --- Parse incoming message JSON --------------------------------
             try:
                 msg = json.loads(raw)
+                
+                origin = msg.get("from")
+                if origin in server_addrs:
+                    last_seen[origin] = time.time()
             except Exception as e:
                 # Invalid JSON; send ERROR response
                 error_msg = {
@@ -1159,8 +1163,6 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 origin_sid = payload.get("server_id") or msg.get("from")
                 sig_b64u = msg.get("sig")
 
-                print(f"origin sid: {origin_sid}")
-                print(f"known server: {server_addrs}")
                 # --- Verify signature using sender server pubkey ---
                 if not sig_b64u or origin_sid not in server_addrs:
                     print(f"[sync] Missing sig or unknown origin for SERVER_PRESENCE_SYNC")
@@ -1341,14 +1343,42 @@ async def heartbeat_loop(my_id):
             except Exception as e:
                 print(f"[heartbeat] Failed to send to {sid}: {e}")
 
-async def monitor_health():
-    """Periodically check if any peer has gone silent."""
+async def monitor_health(my_id, host, port):
+    """Check peer health and reconnect to dead servers."""
     while True:
         await asyncio.sleep(30)
         now = time.time()
-        for sid, t in list(last_seen.items()):
-            if now - t > 45:
-                print(f"[health] Server {sid} may be down (last seen {int(now - t)}s ago)")
+
+        for sid, last in list(last_seen.items()):
+            # Skip self
+            if sid == my_id:
+                continue
+
+            # If silent for >45s → consider dead
+            if now - last > 45:
+                ws = servers.get(sid)
+                if ws and is_open(ws):
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                servers[sid] = None
+                print(f"[health] Server {sid} considered dead (no frames for {int(now - last)} s)")
+
+                # Try reconnecting using server_addrs info
+                if sid in server_addrs:
+                    h, p, _ = server_addrs[sid]
+                    uri = f"ws://{h}:{p}"
+                    try:
+                        new_ws = await websockets.connect(uri, ping_interval=15, ping_timeout=45)
+                        servers[sid] = new_ws
+                        print(f"[reconnect] Reconnected to {sid} at {uri}")
+                        # Send a fresh SERVER_ANNOUNCE
+                        announce = build_server_announce(my_id, host, port, public_pem_to_der_b64url(pub_pem))
+                        await new_ws.send(json.dumps(announce))
+                        last_seen[sid] = time.time()
+                    except Exception as e:
+                        print(f"[reconnect] Failed reconnect to {sid}: {e}")
 
 # ---------------------------------------------------------------------------
 # Main server loop
@@ -1390,7 +1420,7 @@ async def main_loop(server_uuid: str, host: str, port: int, server_name: str, in
                 except Exception as e:
                     print(f"[{server_uuid}] Failed to announce to {sid}: {e}")
         asyncio.create_task(heartbeat_loop(server_uuid))
-        asyncio.create_task(monitor_health())
+        asyncio.create_task(monitor_health(server_uuid, host, port))
         await asyncio.Future()
 
 # ------------------------------------------------------------
