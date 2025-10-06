@@ -35,7 +35,7 @@ from keys import (
 # Static bootstrap list of introducers (normally YAML/config file)
 bootstrap_servers = [
     {"host": "127.0.0.1", "port": 9001,
-     "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
+     "pubkey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA8F2eeTpQ3mnxppyr8kmaaK-3G8PB1728lyn9lXFhbYXJiZ7BDpsV3RSIlVA0ewtW_U7goGsVZhf4lwZEjeVnqqUFbheXXlMtCOO4BzPgpPD6PtHnXvIv8EMyQP8gXJLm9zQb1KR9mvKwRYqretNB504DNGyjpdsUpw7lkjYv4RvJdFsskvftWut-coGoJAAPDm8cskOAT2oHPPlhDmIkfK6HypUNE_2RMJIDlkzbCTuPsHRcrXjur-GLjAfFfILphn1BDV5sF1kEZz1oKQOIeSYk7fD-eiUSjr5i_ypXXwKlhM96THLJvTG7X2GYtoGwBNM1jXOMk8C5cq9T5myCLfv5iZC7mGMKIQKDv9J_AV-3b1GGc7Y-NYTfHpHOLm9gVdb9MUw9tPz5JXf1jXSnT95zGxGM2HDwOyEIssYpv_FjMFqBJNqwzNlUnfqtHnAaAUgRcKzUieFPEGBz6iyfrzoBoyuPtxGu84Bd-VBarPiFczGC_zR7v6pPRAMcqUHgR2M3uHT4smWCuC_QTW5-KVtsVNHK57aS_5q46fo2dfS_CcYsyWfXel6wmRtlrQbi1KmvgZQxaIjOLSQaVm8ezpXjg1S_lX-TWnBZCNc4Dnfn8a3wo4NlRd0NVhJnGOC4x5v4nYEF3kQ0ETm2kCF485p0dn5u5xy1M5Fg9-9gg-UCAwEAAQ"},
     # {"host": "127.0.0.1", "port": 9002,
     #  "pubkey": "BASE64URL_OF_INTRODUCER_PUBKEY"},
 ]
@@ -55,6 +55,13 @@ def is_open(ws):
             return getattr(ws.state, "name", "").upper() == "OPEN"
     except Exception:
         return False
+    return False
+
+def is_introducer(host: str, port: int) -> bool:
+    """Return True if (host, port) matches a known introducer from the bootstrap list."""
+    for entry in bootstrap_servers:
+        if entry["host"] == host and int(entry["port"]) == int(port):
+            return True
     return False
 
 # ---------------------------------------------------------------------------
@@ -91,9 +98,10 @@ user_pubkeys = {}     # user_uuid -> public key PEM string
 user_names = {}       # user_uuid -> human-friendly name (optional)
 
 # ---------------------------------------------------------------------------
-# Server identity (ephemeral RSA-4096 for transport signing)
+# Server identity (persistent RSA-4096 for transport signing)
 # ---------------------------------------------------------------------------
-priv_pem, pub_pem = generate_rsa4096()
+priv_pem = None
+pub_pem  = None
 server_pubkeys = {}   # map of other servers’ pubkeys (future federation use)
 
 # ---------------------------------------------------------------------------
@@ -105,6 +113,7 @@ def sign_payload(payload: dict) -> str:
     (keys sorted). Returns base64url string with no padding.
     """
     payload_bytes = json.dumps(payload, sort_keys=True).encode()
+    # print(f"server key: {priv_pem}")
     return b64url_encode(rsa_pss_sign(priv_pem, payload_bytes))
 
 def build_server_hello_join(my_id, host, port, pubkey_b64u):
@@ -175,46 +184,73 @@ def build_presence_sync(server_id):
 # Main per-connection handler
 # ---------------------------------------------------------------------------
 async def bootstrap_with_introducer(my_id, host, port, pubkey_b64u):
+    """Join the SOCP network via an introducer, verifying its signature."""
+    last_err = None
+    introducer_hosts = {(b["host"], b["port"]) for b in bootstrap_servers}
+
     for entry in bootstrap_servers:
-        introducer_uri = f"ws://{entry['host']}:{entry['port']}"
+        introducer_host, introducer_port = entry["host"], entry["port"]
+        introducer_pub_b64u = entry["pubkey"]
+        introducer_uri = f"ws://{introducer_host}:{introducer_port}"
+
         try:
-            async with websockets.connect(introducer_uri) as ws:
+            async with websockets.connect(introducer_uri, ping_interval=15, ping_timeout=45) as ws:
+                # 👇 Corrected: use *our* host/port (not introducer’s)
                 join_msg = build_server_hello_join(my_id, host, port, pubkey_b64u)
+                join_msg["to"] = f"{introducer_host}:{introducer_port}"  # per spec
                 await ws.send(json.dumps(join_msg))
 
                 raw = await ws.recv()
                 msg = json.loads(raw)
-                if msg.get("type") == "SERVER_WELCOME":
-                    assigned_id = msg["payload"]["assigned_id"]
+                if msg.get("type") != "SERVER_WELCOME":
+                    raise RuntimeError("Unexpected response during bootstrap")
 
-                    # Store all known servers and their addresses
-                    for s in msg["payload"].get("servers", []):
-                        sid = s["server_id"]
-                        host = s["host"]
-                        port = s["port"]
-                        pubkey = s["pubkey"]
-                        server_addrs[sid] = (host, port, pubkey)
-                        servers[sid] = None
+                # ✅ Verify introducer signature with pinned key
+                intro_pub_pem = der_b64url_to_public_pem(introducer_pub_b64u)
+                payload = msg.get("payload", {}) or {}
+                sig_ok = rsa_pss_verify(
+                    intro_pub_pem,
+                    json.dumps(payload, sort_keys=True).encode(),
+                    b64url_decode(msg.get("sig", "")),
+                )
+                if not sig_ok:
+                    raise RuntimeError("SERVER_WELCOME signature failed (introducer not trusted)")
 
-                    # Store all known clients/users from the introducer
-                    for c in msg["payload"].get("clients", []):
-                        uid = c.get("user_id")
-                        pubkey_b64u = c.get("pubkey")
-                        if not uid or not pubkey_b64u:
-                            continue
-                        try:
-                            user_pubkeys[uid] = der_b64url_to_public_pem(pubkey_b64u).decode()
-                            user_locations[uid] = entry.get("server_id", "introducer")  # map to introducer
-                            print(f"[bootstrap] Learned existing user {uid} from introducer.")
-                        except Exception as e:
-                            print(f"[bootstrap] Failed to import user {uid} from introducer: {e}")
+                assigned_id = payload.get("assigned_id")
+                if not assigned_id:
+                    raise RuntimeError("SERVER_WELCOME missing assigned_id")
 
-                    print(f"[bootstrap] Got assigned_id={assigned_id}, known servers={list(server_addrs.keys())}")
-                    return assigned_id
+                # ✅ Import known servers, but skip introducer entries
+                for s in payload.get("servers", []):
+                    sid, h, p, pk = s["server_id"], s["host"], s["port"], s["pubkey"]
+                    if (h, p) in introducer_hosts:
+                        print(f"[bootstrap] Skipping introducer {h}:{p} from peer list.")
+                        continue
+                    server_addrs[sid] = (h, p, pk)
+                    servers[sid] = None
+
+                # ✅ Import known clients from introducer (for awareness)
+                for c in payload.get("clients", []):
+                    uid = c.get("user_id")
+                    pk_b64u = c.get("pubkey")
+                    if not uid or not pk_b64u:
+                        continue
+                    try:
+                        user_pubkeys[uid] = der_b64url_to_public_pem(pk_b64u).decode()
+                        user_locations[uid] = "remote"
+                    except Exception:
+                        pass
+
+                print(f"[bootstrap] OK via {introducer_uri} → assigned_id={assigned_id}")
+                print(f"[bootstrap] Known servers after join: {server_addrs}")
+                return assigned_id
 
         except Exception as e:
-            print(f"[bootstrap] Failed to connect to {introducer_uri}: {e}")
-            raise RuntimeError("Could not connect to any introducer")
+            last_err = e
+            print(f"[bootstrap] Failed via {introducer_uri}: {e}")
+            continue
+
+    raise RuntimeError(f"Could not connect to any introducer: {last_err}")
 
 
 async def handle_ws(websocket, server_id: str, server_name: str):
@@ -1074,6 +1110,7 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                     print(f"[{server_id}] SERVER_DELIVER missing sig or unknown origin")
                     return
 
+                print(f"origin_sid: {origin_sid}")
                 pubkey_b64u = server_addrs[origin_sid][2]
                 origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
                 if not rsa_pss_verify(origin_srv_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
@@ -1119,12 +1156,15 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 origin_sid = payload.get("server_id") or msg.get("from")
                 sig_b64u = msg.get("sig")
 
+                print(f"origin sid: {origin_sid}")
+                print(f"known server: {server_addrs}")
                 # --- Verify signature using sender server pubkey ---
                 if not sig_b64u or origin_sid not in server_addrs:
                     print(f"[sync] Missing sig or unknown origin for SERVER_PRESENCE_SYNC")
                     return
 
                 pubkey_b64u = server_addrs[origin_sid][2]
+                print(f"origin_sid: {origin_sid}")
                 origin_srv_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
                 if not rsa_pss_verify(
                     origin_srv_pub_pem,
@@ -1237,8 +1277,10 @@ async def handle_ws(websocket, server_id: str, server_name: str):
 
 async def connect_to_known_servers(my_id, host, port):
     for sid, (h, p, pk_b64u) in server_addrs.items():
-        if sid == my_id:
+        # Skip self and introducers
+        if sid == my_id or is_introducer(h, p):
             continue
+
         uri = f"ws://{h}:{p}"
         try:
             ws = await websockets.connect(uri, ping_interval=15, ping_timeout=45)
@@ -1308,6 +1350,11 @@ if __name__ == "__main__":
 
     # Choose a display name (for adverts). Default to first 8 chars of UUID.
     server_name = args.name or f"server-{server_uuid[:8]}"
+
+    # NEW: persist keys for this server (introducer or not)
+    from keys import load_or_create_keys, public_pem_to_der_b64url
+    priv_pem, pub_pem = load_or_create_keys(server_name)   # e.g., .keys/server-xxxx.priv.pem
+    print(f"[keys] Loaded keys for {server_name} → .keys/{server_name}.priv.pem / .pub.pem")
 
     try:
         asyncio.run(main_loop(server_uuid, args.host, args.port, server_name, introducer_mode=args.introducer))
