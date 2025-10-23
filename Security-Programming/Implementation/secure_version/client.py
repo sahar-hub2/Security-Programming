@@ -11,7 +11,15 @@ Implements:
 - Handles USER_ADVERTISE, USER_REMOVE, MSG_DIRECT, MSG_BROADCAST
 - Nice UX: show names with UUIDs; allow /tell <name> as well as /tell <uuid>
 
-Author: Your Group Name
+Author: GROUP 12
+MEMBERS:  
+  1. Debasish Saha Pranta (a1963099, debasishsaha.pranta@student.adelaide.edu.au)
+  2. Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
+  3. Abidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
+  4. Sahar Alzahrani (a1938372, sahar.alzahrani@student.adelaide.edu.au)
+  5. Mahrin Mahia (a1957342, mahrin.mahia@student.adelaide.edu.au)
+  6. Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)
+
 """
 
 import asyncio, websockets, json, argparse, time, uuid, re, os, uuid, math, base64
@@ -59,14 +67,34 @@ def verify_transport_sig(msg: dict, known_pubkeys: dict) -> bool:
     - Fallback to msg['from'] when from==server_id (e.g., USER_ADVERTISE or CMD_LIST_RESULT).
     """
     sig_b64u = msg.get("sig")
+    # Require signature for transport-level frames. Missing signatures
+    # are considered invalid in hardened deployments.
     if not sig_b64u:
-        return True  # tolerate missing while developing
+        return False
     signer_id = msg.get("relay") or msg.get("from")
     if signer_id not in known_pubkeys:
         return False
     payload_bytes = json.dumps(msg.get("payload", {}), sort_keys=True).encode()
     try:
         return rsa_pss_verify(known_pubkeys[signer_id], payload_bytes, b64url_decode(sig_b64u))
+    except Exception:
+        return False
+
+
+def is_pubkey_strong(pem_bytes: bytes, min_bits: int = 2048) -> bool:
+    """Return True if the provided public key PEM meets minimal strength.
+
+    - RSA keys must be >= min_bits.
+    - Non-RSA public key types are accepted (you can tighten checks as needed).
+    """
+    try:
+        key = serialization.load_pem_public_key(pem_bytes)
+        # Only check RSA key sizes here; other algorithms (Ed25519, etc.) are OK.
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+
+        if isinstance(key, RSAPublicKey):
+            return key.key_size >= min_bits
+        return True
     except Exception:
         return False
 

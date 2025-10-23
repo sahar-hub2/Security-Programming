@@ -13,7 +13,15 @@ Each introducer entry includes:
 
 Keys are stored under .keys/introducers/ for clarity.
 
-Author: Your Group Name
+Author: GROUP 12
+MEMBERS:  
+  1. Debasish Saha Pranta (a1963099, debasishsaha.pranta@student.adelaide.edu.au)
+  2. Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
+  3. Abidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
+  4. Sahar Alzahrani (a1938372, sahar.alzahrani@student.adelaide.edu.au)
+  5. Mahrin Mahia (a1957342, mahrin.mahia@student.adelaide.edu.au)
+  6. Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)
+
 """
 
 import os, yaml

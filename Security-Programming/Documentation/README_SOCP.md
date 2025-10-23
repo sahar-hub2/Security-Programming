@@ -248,5 +248,17 @@ Expected on **Alice**:
 
 ---
 
-## 🧑‍💻 Authors
-Your Group Name — Advanced Secure Protocol Design, Implementation and Review (Phase 2)
+
+## 👥 Authors
+**Group Name:** Group 12  
+**Course:** Secure Programming — SOCP Project  
+**Version:** 1.3  
+**Date:** 2025-10-06 
+Author: GROUP 12
+**MEMBERS:**:  
+  1. Debasish Saha Pranta (a1963099, debasishsaha.pranta@student.adelaide.edu.au)
+  2. Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
+  3. Abidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
+  4. Sahar Alzahrani (a1938372, sahar.alzahrani@student.adelaide.edu.au)
+  5. Mahrin Mahia (a1957342, mahrin.mahia@student.adelaide.edu.au)
+  6. Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)

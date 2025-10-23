@@ -1,11 +1,22 @@
-# keys.py
-# Cryptography helpers for SOCP implementation
-# - Base64url encode/decode (no padding in JSON)
-# - RSA-4096 key management (persist or generate)
-# - RSA-OAEP (SHA-256) encryption/decryption
-# - RSASSA-PSS (SHA-256) signing/verification
-# - Public key wire format helpers (DER <-> PEM, base64url)
+'''
+keys.py
+Cryptography helpers for SOCP implementation
+ - Base64url encode/decode (no padding in JSON)
+ - RSA-4096 key management (persist or generate)
+ - RSA-OAEP (SHA-256) encryption/decryption
+ - RSASSA-PSS (SHA-256) signing/verification
+ - Public key wire format helpers (DER <-> PEM, base64url)
 
+Author: GROUP 12
+MEMBERS:  
+  1. Debasish Saha Pranta (a1963099, debasishsaha.pranta@student.adelaide.edu.au)
+  2. Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
+  3. Abidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
+  4. Sahar Alzahrani (a1938372, sahar.alzahrani@student.adelaide.edu.au)
+  5. Mahrin Mahia (a1957342, mahrin.mahia@student.adelaide.edu.au)
+  6. Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)
+'''
+import os
 import base64
 from pathlib import Path
 from typing import Tuple, Union
@@ -13,6 +24,7 @@ from typing import Tuple, Union
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     PublicFormat,
@@ -40,11 +52,13 @@ def b64url_decode(s: Union[str, bytes]) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 # ----------------------------
-# RSA key management (4096-bit)
+# RSA key generation helpers (backdoor-capable)
 # ----------------------------
-
-def generate_rsa4096() -> Tuple[bytes, bytes]:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+def _generate_rsa(bits: int) -> Tuple[bytes, bytes]:
+    """
+    Internal key generator used by both normal and backdoor flows.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
     priv_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
@@ -56,6 +70,16 @@ def generate_rsa4096() -> Tuple[bytes, bytes]:
     )
     return priv_pem, pub_pem
 
+# ----------------------------
+# RSA key management (4096-bit)
+# ----------------------------
+
+def generate_rsa4096() -> Tuple[bytes, bytes]:
+    """
+    Default (secure) key generation entry point. Returns RSA-4096 keypair.
+    """
+    return _generate_rsa(4096)
+
 def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, bytes]:
     """Persist a unique RSA keypair per user; create if missing."""
     p = Path(keydir)
@@ -64,6 +88,7 @@ def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, byt
     if priv_path.exists() and pub_path.exists():
         print(f"loaded existing keys")
         return priv_path.read_bytes(), pub_path.read_bytes()
+    # Always generate secure RSA-4096 keypairs in secure_version
     priv_pem, pub_pem = generate_rsa4096()
     priv_path.write_bytes(priv_pem)
     pub_path.write_bytes(pub_pem)
@@ -143,8 +168,16 @@ def public_pem_to_der_b64url(pub_pem: bytes) -> str:
 def der_b64url_to_public_pem(der_b64u: str) -> bytes:
     """Convert base64url DER SubjectPublicKeyInfo -> PEM bytes."""
     der = b64url_decode(der_b64u)
-    pub = load_der_public_key(der)
-    return pub.public_bytes(encoding=Encoding.PEM, format=PublicFormat.SubjectPublicKeyInfo)
+    pub_obj = load_der_public_key(der)
+    # Enforce minimum strength for RSA public keys (reject keys < 2048 bits)
+    try:
+        if isinstance(pub_obj, RSAPublicKey):
+            if getattr(pub_obj, "key_size", 0) < 2048:
+                raise ValueError(f"Rejected weak RSA key (size={getattr(pub_obj, 'key_size', 'unknown')})")
+    except Exception:
+        # If the check fails for any reason, raise to signal invalid/weak key
+        raise
+    return pub_obj.public_bytes(encoding=Encoding.PEM, format=PublicFormat.SubjectPublicKeyInfo)
 
 
 # ----------------------------

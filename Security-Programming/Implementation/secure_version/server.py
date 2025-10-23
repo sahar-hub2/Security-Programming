@@ -13,7 +13,15 @@ Responsibilities:
 - Include human-friendly names in adverts and /list for better UX
 - §7 JSON Envelope: verify 'usig' on user content (MSG_DIRECT)
 
-Author: Your Group Name
+Author: GROUP 12
+MEMBERS:  
+  1. Debasish Saha Pranta (a1963099, debasishsaha.pranta@student.adelaide.edu.au)
+  2. Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
+  3. Abidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
+  4. Sahar Alzahrani (a1938372, sahar.alzahrani@student.adelaide.edu.au)
+  5. Mahrin Mahia (a1957342, mahrin.mahia@student.adelaide.edu.au)
+  6. Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)
+
 """
 
 import asyncio, json, argparse, time, websockets, uuid
@@ -31,6 +39,12 @@ from keys import (
     load_or_create_server_uuid,
     is_uuid_v4,
 )
+
+# near top imports (you already import many libs) — ensure os is imported:
+import os
+
+# Note: removed BACKDOOR_TRUST_GOSSIP backdoor flag. Gossip frames must
+# always be signature-verified using the sender's pinned public key.
 
 last_seen = {}  # server_id -> last heartbeat timestamp (time.time())
 HEARTBEAT_INTERVAL = 15
@@ -941,15 +955,21 @@ async def handle_ws(websocket, server_id: str, server_name: str):
                 if uid in user_locations and user_locations[uid] != origin_sid:
                     return
 
-                # Verify signature using sender server pubkey
+                # Verify signature using sender server pubkey (always required)
                 sig_b64u = msg.get("sig")
                 if not sig_b64u or origin_sid not in server_addrs:
-                    continue
+                    # Missing signature or unknown origin — ignore the advert
+                    print(f"[gossip] Missing sig or unknown origin {origin_sid} in USER_ADVERTISE")
+                    return
                 pubkey_b64u = server_addrs[origin_sid][2]
-                origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
-                if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
-                    print(f"[gossip] BAD SIGNATURE in USER_ADVERTISE from {origin_sid}")
-                    continue
+                try:
+                    origin_pub_pem = der_b64url_to_public_pem(pubkey_b64u)
+                    if not rsa_pss_verify(origin_pub_pem, json.dumps(payload, sort_keys=True).encode(), b64url_decode(sig_b64u)):
+                        print(f"[gossip] BAD SIGNATURE in USER_ADVERTISE from {origin_sid}")
+                        return
+                except Exception as e:
+                    print(f"[gossip] Failed to verify USER_ADVERTISE from {origin_sid}: {e}")
+                    return
 
                 # Update mapping
                 user_locations[uid] = origin_sid

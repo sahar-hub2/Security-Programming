@@ -1,0 +1,12 @@
+# Core testing and async support
+pytest>=8.0.0
+pytest-asyncio>=0.21.0
+
+# WebSocket communication
+websockets>=11.0.0
+
+# YAML config parsing
+pyyaml
+
+# Cryptography (RSA, PSS, OAEP)
+cryptography>=41.0.0
