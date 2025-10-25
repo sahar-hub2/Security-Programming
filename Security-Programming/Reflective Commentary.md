@@ -10,6 +10,26 @@ Implementing SOCP gives teams hands-on experience with distributed network coord
 Trade-offs include higher computational overhead from RSA-only encryption, limited flexibility due to the mandatory public channel, and added complexity in managing per-user keys and broadcast fan-out. Multi-server routing and gossip updates may also introduce latency in larger networks. Overall, SOCP provides a rigorous, security-first framework that balances standardization, reliability, and real-world implementation challenges.
 
 ## Backdoor Design and Exploitation
+* 1) Weak-key acceptance 
+A conditional flag in the backdoored keys.py/key registration flow permits registration of RSA keys significantly weaker than the mandated RSA-4096. The backdoored PoC demonstrates registering a 1024-bit key and having the system accept it as if it were a 4096-bit key.
+Rationale: Purpose is to show how cryptographic strength is only as good as key management and verification. It is often assumed "if the algorithm is strong (RSA-OAEP/PSS) then the system is secure." Accepting weak keys demonstrates that logical or policy-level mistakes entirely undermine cryptography.
+How it’s subtle and plausible: The backdoor is subtle because all runtime messaging still uses RSA-OAEP and RSASSA-PSS APIs. Inspecting traffic looks encrypted, signed; only the key length verification step is lax. A reviewer who checks only "RSA is used" without verifying key sizes or certificate policies will miss the weakness. The system's outward behavior remains functional; no immediate errors, which makes the flaw plausible in real-world deployments where legacy devices produce weak keys. 
+Impact: Accepted weak keys allow offline cryptanalysis or key-forgery attacks, leading to impersonation, decryption, or signature forgery against participants that assume key strength.
+Evidence: poc_weak_key_register.py demonstrates registering a weak key and having the system accept it. Use this PoC to reproduce the behavior in a controlled lab. 
+* 2) Unsigned gossip acceptance
+The backdoored server.py contains a debug-mode conditional that, when enabled, allows acceptance and relay of USER_ADVERTISE and other introducer gossip frames without successful signature verification. This effectively disables the canonical signature check for federated advertisements and allows arbitrary adverts to be injected into the network. 
+Rationale: Purpose is to demonstrate how a small logic change (bypassing one verification condition) can defeat an otherwise robust signature-based security model. The aim is to help reviewers see how trust assumptions in the gossip flow are fragile when signature verification is not enforced end-to-end.
+How it’s subtle and plausible: The gossip pipeline still uses the same JSON envelope format and signature fields; only the signature verification gate is bypassed under an internal flag. Reviewers may see normal envelope shapes and assume signature checks are present if they don't inspect the verification branch. Because messages continue to flow correctly, the issue is easily overlooked during functional testing. 
+Impact: An injected unsigned advert can be propagated across servers, enabling attacker-controlled identities to be trusted and used for impersonation or message routing attacks.
+Evidence: poc_inject_unsigned_advert.py demonstrates how a crafted unsigned advert can be injected and propagated when the backdoor flag is active 
+Detection and Mitigation
+•	(Weak-key acceptance) Enforce cryptographic policy centrally (reject keys < RSA-3072 at import/generation; fail CI on violation). Mitigation can be done by removing runtime flags that short-circuit verification; make any debug bypass compile-time and blocked from production.
+•	(Unsigned gossip acceptance) Centralize signature verification into an auditable function and add unit/property tests that assert every relayed advert passed verification. By adding CI regression tests (unsigned/invalid adverts, sub-policy keys) and log verification anomalies, this issue can be mitigated.
+Ethical considerations and safeguards applied
+The backdoors are intentionally confined to a clearly labelled backdoored_version/ and documented in BACKDOOR_README.md with explicit instructions to run only in isolated lab environments. Documented the PoCs and quarantine instructions to avoid accidental deployment. 
+
+
+
 * Describe what vulnerability your team intentionally introduced
 * Explain your rationale — to illustrate how minor logic flaws (e.g., misplaced validation) can subvert strong cryptography.
 * Reflect on how hard it was to detect: What made it plausible and subtle?
