@@ -126,11 +126,10 @@ Critically evaluate your use of AI (e.g., ChatGPT) for documentation, debugging,
 
 # Reflection on testing
 
-We conducted unit tests to verify the correctness of core functions and integration tests to ensure proper client-server messaging and system behavior.
-Security testing .........
+The security testing of secure_version was designed to comprehensively ensure both the correctness and resilience of the system. It began with static and dynamic analyses to detect potential vulnerabilities, including weak RSA keys, unsafe file handling, unsanitized inputs, missing signature verification, and high-severity issues flagged by Bandit. Building on this, integration tests validated end-to-end encrypted communication, message delivery, replay detection, and the persistence of cryptographic keys across sessions, providing a systems-level verification of protocol integrity. Complementary server and client module tests confirmed proper cryptographic signing, error handling, message routing, and protocol compliance under realistic scenarios, while cryptography utility tests ensured correct key generation, encryption/decryption, signature operations, and robust handling of malformed or invalid inputs. Security hardening checks reinforced this foundation by confirming the absence of backdoors, enforcing minimum key sizes, and verifying safe SQL parameterization and input validation. Additionally, vulnerabilities identified by Snyk, including path traversal and insecure dependency handling, were addressed to safeguard file operations and TLS authentication. Together, these carefully orchestrated testing activities provide a thorough and reliable evaluation of the system’s security and functionality, with the full detailed test plan and results available in the appendix for reference.
+
 Interoperability testing.........
-These tests helped identify minor issues, which were resolved to maintain compatibility and functional integrity. Detailed test scripts, results, and documentation are provided in the GitHub repository and Appendix,
-giving a clear record of our testing methodology and outcomes.
+
 
 # Group Contributions
 
