@@ -55,6 +55,14 @@ and resilient error handling under fuzzed input. Static and dynamic analyses rev
 underscoring the importance of rigorous input validation, secure transport channels, and robust cryptographic hygiene. The challenge in reviewing this group was navigating Rust-specific idioms and cryptographic abstractions while maintaining clarity in recommendations. 
 The full, detailed reviews and supporting evidence are provided in the Appendix.
 
+-- Abidul Kabir --
+During the implementation of the secure chat system, the following were some of the feedbacks given to group 69, group 41 and group 25 by Abidul Kabir.
+
+Group 69 introduced a modular system that was well structured with working encryption and message handling. Nevertheless, the hardcoded or weak RSA parameters, the absence of TLS support, and the absence of authentication handshakes along with the risk of unsafe SQL query construction were found using both the static analysis (Bandit) and the manual one. The excessive exception silencing and absence of documentation was also identified by the code quality checks.
+The Group 41 also offered a test mode, which posed severe threats of 1024-bit RSA keys, disabled replay protection and allowing identity registration. Although Bandit was able to detect only minor problems, these backdoors were identified during the manual review. The ability to distinguish between deliberate flaws and actual design weaknesses was another major problem, which was resolved by using ethical testing and config inspection.
+Group 25 possessed a secure functional set up. Some of the key weaknesses were absence of TLS, poor key enforcement, and insecure validation with assert statements. The system failed to authenticate identities correctly and lacked important security functions such as message validation and formatted error processing. An inspection was performed both manually and using the static tools and showed several input validation and transport-layer vulnerabilities.
+The main obstacle that was evident in all reviews was the correlation of the findings of tools with real-life attack situations. This was checked with combined Bandit, Pylint, manual tracing and runtime experiments. The full reviews and evidence is presented in the Appendix.
+
 * Identify: State your name and the group reviewed.
 * Overview: Brief summary of project purpose and focus areas.
 * Strengths: Highlight well-implemented design or security features.
@@ -90,8 +98,8 @@ giving a clear record of our testing methodology and outcomes.
 
 # Group 12:
  1. Debasish Saha Pranta (a1963099, debasishsaha.pranta@student.adelaide.edu.au)
- 2.  Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
- 3. bidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
+ 2. Samin Yeasar Seaum (a1976022, saminyeasar.seaum@student.adelaide.edu.au)
+ 3. Abidul Kabir (a1974976, abidul.kabir@student.adelaide.edu.au)
  4. Sahar Alzahrani (a1938372, sahar.alzahrani@student.adelaide.edu.au)
  5. Mahrin Mahia (a1957342, mahrin.mahia@student.adelaide.edu.au)
  6. Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)
