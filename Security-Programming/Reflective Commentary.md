@@ -88,6 +88,31 @@ In all reviews, Debasish showed that he used static inspection, limited runtime 
 -   Weaknesses: Identify vulnerabilities or issues; mention tools used (static/dynamic/manual).
 -   Challenges: Note any difficulties you faced and how you addressed them.
 
+Peer Review Summary **Samin Yeasar Seaum**.
+
+**Samin Yeasar Seaum** (a1976022) the following were feedbacks as given to Groups 43, 69, and 70 regarding their Secure Chat System projects.
+
+Groups Reviewed:
+I offered formal peer reviews to Group 43, Group 69 and Group 70. The workflow of each review was identical: Pylint and Bandit were used to perform the static analysis, the codebase was examined manually, and the SOCP v1.3 compliance was checked as well as a list of recommendations issued by the professional feedback report was created.
+
+Feedback Provided:
+In the case of Group 43, I concentrated on maintainability and compliance to the specification of SOCP. I reported two educational backdoors, two messages of the form: unsigned USER_ADVERTISE and weak key registration and suggested more rigorous checking signature validation, RSA-4096, and better exception handling.
+
+In the case of Group 70, I have reviewed 4 backdoors: hard-coded secrets, placeholder signatures, weak default on RSA-keys, and binding to all interfaces. The feedback focused on the best practices in secret management, signing messages securely, exposure control in the network, and continuous-integration testing.
+
+In the case of Group 69, I checked a more complicated node based design and database layer. I found plaintext WebSocket use, weak key-acceptance, silent signature-verification failures and dynamic SQL risks. The recommendations I made were migration to wss:// transport, key-strength validation, fail-closed logic, and strict SQL parameterisation.
+
+The common strengths found in all reviews included modular architectures, clear cryptographic knowledge, and coherent code style alongside incremental and viable security and maintainability enhancement.
+
+Challenges Faced:
+The key issues were (1) the large, heterogeneous codebases that are based on different frameworks, (2) the separation of intentional educational vulnerabilities and real oversights, and (3) the interpretation of incomplete documentation of cryptographic flows.
+
+How I Overcame Challenges:
+To ensure impartiality and consistency, I normalised the review process into repetitive phases, such as automated scanning, manual checks, compliance mapping, and report creation. I have also referred to the SOCP v1.3 brief and project rubric to establish which weaknesses were deliberately created. Questions to classmates on the discussion board helped in resolving vague decisions. Any analysis was conducted in closed system to prevent the risk of security.
+
+Reflection:
+These reviews enhanced my practical skills in conducting secure-coding analysis, cryptographic enforcement, and positive feedback. It helped me to be more critical and supportive at the same time and to present technical findings in a clear and professional way, which is important in both collaboration and software development and in the actual cybersecurity evaluation.
+
 # Reflection on AI Use
 
 Critically evaluate your use of AI (e.g., ChatGPT) for documentation, debugging, and explanation:
