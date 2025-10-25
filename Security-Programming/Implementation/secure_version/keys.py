@@ -20,6 +20,7 @@ import os
 import base64
 from pathlib import Path
 from typing import Tuple, Union
+import re
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -82,9 +83,25 @@ def generate_rsa4096() -> Tuple[bytes, bytes]:
 
 def load_or_create_keys(user_id: str, keydir: str = ".keys") -> Tuple[bytes, bytes]:
     """Persist a unique RSA keypair per user; create if missing."""
+    # Sanitize user-controlled filename parts to prevent path traversal.
+    def _sanitize_name(n: str) -> str:
+        if not isinstance(n, str):
+            raise TypeError("name must be a string")
+        # strip leading slashes/backslashes to avoid absolute paths
+        n = n.lstrip("/\\")
+        # reject path traversal or separators anywhere
+        if ".." in n or "/" in n or "\\" in n:
+            raise ValueError("invalid user id")
+        # restrict characters to a safe subset
+        if not re.match(r'^[A-Za-z0-9._-]+$', n):
+            raise ValueError("invalid user id")
+        return n
+
+    safe_user_id = _sanitize_name(user_id)
     p = Path(keydir)
     p.mkdir(parents=True, exist_ok=True)
-    priv_path, pub_path = p / f"{user_id}.priv.pem", p / f"{user_id}.pub.pem"
+    p = p.resolve()
+    priv_path, pub_path = p / f"{safe_user_id}.priv.pem", p / f"{safe_user_id}.pub.pem"
     if priv_path.exists() and pub_path.exists():
         print(f"loaded existing keys")
         return priv_path.read_bytes(), pub_path.read_bytes()
@@ -197,9 +214,19 @@ def load_or_create_user_uuid(nickname: str, keydir: str = ".keys") -> str:
     Map a human nickname to a stable UUID v4 for on-wire identity.
     Persists mapping at .keys/<nickname>.uuid
     """
+    # Sanitize nickname to avoid path traversal when persisting UUID file
+    if not isinstance(nickname, str):
+        raise TypeError("nickname must be a string")
+    nn = nickname.lstrip("/\\")
+    if ".." in nn or "/" in nn or "\\" in nn:
+        raise ValueError("invalid nickname")
+    if not re.match(r'^[A-Za-z0-9._-]+$', nn):
+        raise ValueError("invalid nickname")
+
     p = Path(keydir)
     p.mkdir(parents=True, exist_ok=True)
-    f = p / f"{nickname}.uuid"
+    p = p.resolve()
+    f = p / f"{nn}.uuid"
     if f.exists():
         return f.read_text().strip()
     new_id = str(uuid.uuid4())
@@ -213,8 +240,20 @@ def load_or_create_server_uuid(preferred: str | None = None, keydir: str = ".key
     - Otherwise create one.
     - If 'name' is given, the UUID is stored at .keys/server_<name>.uuid
     """
+    # Sanitize server name component if provided
+    if name is not None:
+        if not isinstance(name, str):
+            raise TypeError("name must be a string")
+        nm = name.lstrip("/\\")
+        if ".." in nm or "/" in nm or "\\" in nm:
+            raise ValueError("invalid server name")
+        if not re.match(r'^[A-Za-z0-9._-]+$', nm):
+            raise ValueError("invalid server name")
+        name = nm
+
     p = Path(keydir)
     p.mkdir(parents=True, exist_ok=True)
+    p = p.resolve()
     fname = f"server_{name}.uuid" if name else "server.uuid"
     f = p / fname
 
