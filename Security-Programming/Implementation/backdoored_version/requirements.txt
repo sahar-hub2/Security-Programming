@@ -9,4 +9,4 @@ websockets>=11.0.0
 pyyaml
 
 # Cryptography (RSA, PSS, OAEP)
-cryptography>=41.0.0
+cryptography>=46.0.0
