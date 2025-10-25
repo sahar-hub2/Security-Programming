@@ -85,15 +85,8 @@ Lastly, the Secure Chat System by Group 77 showed good mastery of the cryptograp
 
 In all reviews, Debasish showed that he used static inspection, limited runtime analysis, and manual reasoning to evaluate security, correctness and architectural soundness. The aggregate knowledge supported the paramount role of input validation, secure key management, authenticated communication, and resilience testing of constructing secure distributed chat systems.
 
--   Identify: State your name and the group reviewed.
--   Overview: Brief summary of project purpose and focus areas.
--   Strengths: Highlight well-implemented design or security features.
--   Weaknesses: Identify vulnerabilities or issues; mention tools used (static/dynamic/manual).
--   Challenges: Note any difficulties you faced and how you addressed them.
-
-Peer Review Summary **Samin Yeasar Seaum**.
-
-**Samin Yeasar Seaum** (a1976022) the following were feedbacks as given to Groups 43, 69, and 70 regarding their Secure Chat System projects.
+### Samin Yeasar Seaum
+Samin Yeasar Seaum (a1976022) the following were feedbacks as given to Groups 43, 69, and 70 regarding their Secure Chat System projects.
 
 Groups Reviewed:
 I offered formal peer reviews to Group 43, Group 69 and Group 70. The workflow of each review was identical: Pylint and Bandit were used to perform the static analysis, the codebase was examined manually, and the SOCP v1.3 compliance was checked as well as a list of recommendations issued by the professional feedback report was created.
@@ -115,6 +108,12 @@ To ensure impartiality and consistency, I normalised the review process into rep
 
 Reflection:
 These reviews enhanced my practical skills in conducting secure-coding analysis, cryptographic enforcement, and positive feedback. It helped me to be more critical and supportive at the same time and to present technical findings in a clear and professional way, which is important in both collaboration and software development and in the actual cybersecurity evaluation.
+
+-   Identify: State your name and the group reviewed.
+-   Overview: Brief summary of project purpose and focus areas.
+-   Strengths: Highlight well-implemented design or security features.
+-   Weaknesses: Identify vulnerabilities or issues; mention tools used (static/dynamic/manual).
+-   Challenges: Note any difficulties you faced and how you addressed them.
 
 # Reflection on AI Use
 
