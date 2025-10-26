@@ -128,7 +128,8 @@ Engaging with diverse codebases across Python and C++ implementations highlighte
 ### Maria Hasan Logno
 Maria Hasan Logno (a1975478) has provided the feedback peer review to the following groups 26, 88 and 91.
 
-## Peer Review: Group 26 - Realtime Chat System (WebSocket + RSA/AES)
+Peer Review: Group 26 - Realtime Chat System (WebSocket + RSA/AES)
+
 Group 26 has developed a real-time chat system using WebSocket with claimed RSA/AES encryption. The system supports user authentication, private/group messaging, file transfer, and online user listing. However, the implementation exhibits significant security vulnerabilities and architectural weaknesses that fundamentally undermine its security posture.
 Strengths
 •	Clear documentation and setup instructions in README files
@@ -142,7 +143,8 @@ o	Despite claims of "RSA + AES encryption," the code contains no cryptographic i
 o	All messages are transmitted in plaintext over unencrypted WebSocket (ws://)
 o	No key generation, encryption, or decryption logic present in server code
 
-## Peer Review: Group 91 - Secure Programming UG-91 Chat System
+Peer Review: Group 91 - Secure Programming UG-91 Chat System
+
 Group 91 has developed a comprehensive WebSocket-based chat system with multiple security features and a well-structured project architecture. The implementation demonstrates good software engineering practices with proper documentation, dependency management, and database integration.
 
 Strengths
@@ -166,7 +168,8 @@ Add transport layer security for production deployment
 Include more details about the cryptographic architecture in documentation
 
 
-## Peer Review: Group 88 - EchoChat Distributed Secure Chat System
+Peer Review: Group 88 - EchoChat Distributed Secure Chat System
+
 Overview
 Group 88's EchoChat presents a sophisticated distributed chat system with a modern web frontend and robust backend architecture. The project demonstrates strong software engineering practices with comprehensive documentation and a well-structured technology stack.
 
@@ -190,13 +193,7 @@ Add file type validation and virus scanning for uploads
 Document encryption implementation details and key management
 Consider implementing end-to-end encryption for enhanced privacy
 
--   Identify: State your name and the group reviewed.
--   Overview: Brief summary of project purpose and focus areas.
--   Strengths: Highlight well-implemented design or security features.
--   Weaknesses: Identify vulnerabilities or issues; mention tools used (static/dynamic/manual).
--   Challenges: Note any difficulties you faced and how you addressed them.
-
-Full individual reports and evidence are attached in the Appendix.
+*Full individual reports and evidence are attached in the Appendix.*
 
 # Reflection on AI Use
 
