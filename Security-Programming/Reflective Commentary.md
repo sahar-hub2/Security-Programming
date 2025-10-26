@@ -46,15 +46,10 @@ Reviewers also reported some additional weaknesses:
     •	Repository hygiene issues, such as committed .keys/ and data_vault.sqlite files, exposing sensitive data.
     •  	Code-quality concerns, including missing docstrings, long functions, and import disorganization.
 Several reviewers went further and supplied fix examples, such as validate_key_size() checks, PBKDF2 password hashing, and structured exception logging.
+
 The feedback was clear, specific, and actionable. All teams explained how to reproduce the vulnerabilities and offered direct remediation code. Their combined use of Bandit, Semgrep, and manual inspection revealed a valuable comparison: static tools failed to detect the intentional logic-level flaws, whereas manual reasoning achieved full success.
 The reviewers’ suggestions directly influenced the secure rebuild: environment-variable gates were removed, RSA 4096-bit enforcement was added, PBKDF2 password hashing implemented, and .gitignore updated to exclude secret artifacts.
 Overall, the feedback process substantially improved both the robustness of our secure version and our understanding of how structured peer evaluation strengthens secure software development practices.
-
-
--   Backdoors: Check if other groups detected any intentionally left debug or test backdoors.
--   Code Issues: Note if they identified security flaws, input validation problems, or logic errors.
--   Usefulness: Assess whether the feedback was clear, actionable, and helped improve your project.
--   Overall Reflection: Summarize key insights and any gaps in their review.
 
 ## Feedback Provided to Other Groups
 ### Sahar Hassan Alzahrani
@@ -170,6 +165,7 @@ Such outcomes indicate that even though the two systems are based on the SOCP pr
 # Conclusion
 
 Working on the Secure Overlay Chat Protocol (SOCP) was a genuine learning curve that took us from simply building a working encrypted system to realising how easily human error can weaken even the strongest designs. By intentionally adding backdoors and later reviewing them through peer feedback, we saw how small lapses like a skipped validation, a misplaced check, or an unchecked configuration can quietly undermine the security we thought was airtight.
+
 We learned the value of strict protocol discipline and the need to maintain clear trust boundaries between servers, clients, and introducers. It also reinforced the importance of writing code ethically; being transparent, documenting decisions, and isolating any vulnerabilities for safe testing. Building and analysing SOCP gave us hands-on experience with cryptographic integrity, where every signature and key exchange must be open to verification and accountability. Moreover, working on both secure and deliberately flawed versions of SOCP helped us develop that balanced perspective.
 
 
