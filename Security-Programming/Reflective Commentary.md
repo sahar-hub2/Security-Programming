@@ -35,13 +35,22 @@ Trade-offs include higher computational overhead from RSA-only encryption, limit
        Ethical considerations and safeguards applied
        The backdoors are intentionally confined to a clearly labelled backdoored_version/ and documented in BACKDOOR_README.md with explicit instructions to run only in isolated lab environments. Documented the PoCs and quarantine instructions to avoid accidental deployment.
 
--   Describe what vulnerability your team intentionally introduced
--   Explain your rationale — to illustrate how minor logic flaws (e.g., misplaced validation) can subvert strong cryptography.
--   Reflect on how hard it was to detect: What made it plausible and subtle?
--   Show the exploit conceptually (in appendix).
--   Discuss ethics: how intentional vulnerabilities reveal the fragility of developer assumptions.
 
 ## Evaluation of Received Feedback
+
+- All reviewing group successfully detected the two intentional backdoors - BACKDOOR_WEAK_KEYS (RSA-1024 key downgrade) and BACKDOOR_TRUST_GOSSIP (unsigned gossip acceptance). Reviewers demonstrated these through the included PoC scripts poc_weak_key_register.py and poc_inject_unsigned_advert.py, verifying that the backdoors allowed weak key generation and unsigned inter-server messages, leading to potential impersonation or data compromise. Several groups clearly described how environment variables gated these vulnerabilities and rated both as critical. They confirmed the educational intent was well-documented through BACKDOOR_README.md. 
+
+Reviewers also reported some additional weaknesses:
+•	SQL Injection risks through f-string–based queries in datavault.py.
+•	Weak password hashing (SHA-256 + salt only) and the presence of hardcoded default credentials
+.
+•	Repository hygiene issues, such as committed .keys/ and data_vault.sqlite files, exposing sensitive data
+•	Code-quality concerns, including missing docstrings, long functions, and import disorganization.
+Several reviewers went further and supplied fix examples, such as validate_key_size() checks, PBKDF2 password hashing, and structured exception logging.
+The feedback was clear, specific, and actionable. All teams explained how to reproduce the vulnerabilities and offered direct remediation code. Their combined use of Bandit, Semgrep, and manual inspection revealed a valuable comparison: static tools failed to detect the intentional logic-level flaws, whereas manual reasoning achieved full success.
+The reviewers’ suggestions directly influenced the secure rebuild: environment-variable gates were removed, RSA 4096-bit enforcement was added, PBKDF2 password hashing implemented, and .gitignore updated to exclude secret artifacts.
+Overall, the feedback process substantially improved both the robustness of our secure version and our understanding of how structured peer evaluation strengthens secure software development practices.
+
 
 -   Backdoors: Check if other groups detected any intentionally left debug or test backdoors.
 -   Code Issues: Note if they identified security flaws, input validation problems, or logic errors.
@@ -109,11 +118,26 @@ To ensure impartiality and consistency, I normalised the review process into rep
 Reflection:
 These reviews enhanced my practical skills in conducting secure-coding analysis, cryptographic enforcement, and positive feedback. It helped me to be more critical and supportive at the same time and to present technical findings in a clear and professional way, which is important in both collaboration and software development and in the actual cybersecurity evaluation.
 
+### Mahrin Alam Mahia
+The following feedback was provided by Mahrin Alam Mahia (a1957342) to Groups 37, 101, and 97 on their Secure Overlay Chat Protocol projects.
+
+For Group 37, the review emphasized a well-functioning asynchronous chat overlay with correct RSA-OAEP and PSS usage, yet identified unsigned inter-server messages, auto-trust in Zeroconf discovery, and weak enforcement of key-import policies as major risks. Pylint (8.47/10) and Bandit scans confirmed overall good code quality after formatting, with earlier high counts traced to third-party dependencies.
+
+For Group 101, the Python-based system correctly implemented end-to-end encryption and message signing, and the included proof-of-concept exploits successfully demonstrated intentional backdoors such as weak RSA key acceptance, routing-poison and replay vulnerabilities, and missing file-integrity checks. Pylint (7.94/10) and Bandit (low risk post-exclusion) corroborated minor operational weaknesses—broad exceptions, global state, and missing encodings—while a ConnectionClosedOK event highlighted runtime robustness limits rather than a security flaw.
+
+For Group 97, the C++20 implementation demonstrated strong architectural design, correct RSA-4096 encryption, and well-managed dependencies, but lacked bootstrap signature validation, replay protection persistence, and TLS transport. cppcheck and clang-tidy flagged input-sanitization and logging deficiencies consistent with manual review.
+Overall, these reviews deepened understanding of cross-language security enforcement—from Python’s runtime safety gaps to C++’s manual trust management—while reinforcing the need for validated introducer trust, replay defenses, and consistent cryptographic hygiene.
+
+Engaging with diverse codebases across Python and C++ implementations highlighted how each language’s security posture depends on disciplined design, testing, and documentation. This review process strengthened the understanding of secure protocol design, emphasizing that even well-structured systems can conceal subtle weaknesses in trust models, key management, and exception handling.
+
+
 -   Identify: State your name and the group reviewed.
 -   Overview: Brief summary of project purpose and focus areas.
 -   Strengths: Highlight well-implemented design or security features.
 -   Weaknesses: Identify vulnerabilities or issues; mention tools used (static/dynamic/manual).
 -   Challenges: Note any difficulties you faced and how you addressed them.
+
+Full individual reports and evidence are attached in the Appendix.
 
 # Reflection on AI Use
 
