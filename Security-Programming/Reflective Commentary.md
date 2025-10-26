@@ -129,7 +129,6 @@ Engaging with diverse codebases across Python and C++ implementations highlighte
 Maria Hasan Logno (a1975478) has provided the feedback peer review to the following groups 26, 88 and 91.
 
 ## Peer Review: Group 26 - Realtime Chat System (WebSocket + RSA/AES)
-Overview
 Group 26 has developed a real-time chat system using WebSocket with claimed RSA/AES encryption. The system supports user authentication, private/group messaging, file transfer, and online user listing. However, the implementation exhibits significant security vulnerabilities and architectural weaknesses that fundamentally undermine its security posture.
 Strengths
 •	Clear documentation and setup instructions in README files
@@ -142,145 +141,54 @@ Critical Security Weaknesses
 o	Despite claims of "RSA + AES encryption," the code contains no cryptographic implementation
 o	All messages are transmitted in plaintext over unencrypted WebSocket (ws://)
 o	No key generation, encryption, or decryption logic present in server code
-2.	Hardcoded Security Bypass (Backdoor)
-python
-async def route_to_user(self, target_u, frame, originate_user=None, original_frame=None):
-    if target_u=="admin":  # Hardcoded backdoor - blocks messages to 'admin'
-         return
-o	Deliberate message blocking for user "admin" constitutes an intentional backdoor
-o	No legitimate reason for this hardcoded exception
-3.	Insecure Network Configuration
-o	Server binds to all interfaces (0.0.0.0) without authentication
-o	Uses unencrypted WebSocket (ws://) instead of secure WebSocket (wss://)
-o	No transport layer security (TLS/SSL) implementation
-4.	Authentication and Authorization Flaws
-o	No password authentication - users can claim any username
-o	No signature verification for messages
-o	Missing access control mechanisms
-5.	Code Quality Issues
-o	Dead code in _broadcast_local_user_message method (unreachable code after return)
-o	Inconsistent error handling
-o	Missing input validation and sanitization
-o	No protection against injection attacks
-Tools Used for Analysis
-•	Static Analysis: Manual code review, Pylint (not run but evident code structure issues)
-•	Dynamic Analysis: Protocol analysis, security control assessment
-•	Manual Review: Cryptographic implementation verification, architectural assessment
-Critical Vulnerabilities Identified
-1.	CWE-798: Use of Hard-coded Credentials (admin backdoor)
-2.	CWE-319: Cleartext Transmission of Sensitive Information
-3.	CWE-306: Missing Authentication for Critical Function
-4.	CWE-327: Use of a Broken or Risky Cryptographic Algorithm (none implemented)
-5.	CWE-732: Incorrect Permission Assignment for Critical Resource
-Recommendations
-1.	Immediate Critical Fixes
-o	Remove the hardcoded admin bypass in route_to_user method
-o	Implement proper RSA/AES encryption as claimed in documentation
-o	Add TLS/SSL support for WebSocket connections (wss://)
-o	Implement proper user authentication with passwords or certificates
-2.	Security Enhancements
-o	Add message signing and verification
-o	Implement proper key management system
-o	Add input validation and output encoding
-o	Implement rate limiting and DoS protection
-3.	Code Quality Improvements
-o	Remove dead code and fix logical errors
-o	Add comprehensive error handling
-o	Implement proper logging (without sensitive data)
-o	Add unit tests and security testing
-Conclusion
-While Group 26 has created a functional chat system with good documentation, the implementation fails to deliver on its security promises. The presence of intentional backdoors, missing encryption, and fundamental security flaws makes this system unsuitable for any production or secure communication purposes. The discrepancy between documented security features and actual implementation is particularly concerning.
-Priority: Critical - Requires complete security overhaul before any deployment consideration.
 
 ## Peer Review: Group 91 - Secure Programming UG-91 Chat System
-Overview
 Group 91 has developed a comprehensive WebSocket-based chat system with multiple security features and a well-structured project architecture. The implementation demonstrates good software engineering practices with proper documentation, dependency management, and database integration.
 
 Strengths
-
 Excellent documentation with clear setup instructions and troubleshooting guidance
-
 Proper use of requirements.txt for dependency management
-
 Comprehensive feature set including file transfer and multiple messaging types
-
 Database integration with SQLite and proper initialization scripts
-
 Support for multiple server instances with configuration files
-
 Implementation of user authentication with password requirements
-
 Good project structure with separate server/client modules
 
 Security Concerns
-
 Critical: README incorrectly states "Message encryption using SHA256" - SHA256 is a hashing algorithm, not encryption. This fundamental misunderstanding raises concerns about cryptographic implementation.
-
 Missing details on actual encryption methodology for message security
-
 Database initialization process could benefit from automated scripts rather than manual SQLite commands
-
 No mention of transport security (TLS/SSL) for WebSocket connections
-
 Areas for Improvement
-
 Clarify the actual encryption approach used for message security
-
 Consider implementing automated database setup scripts
-
 Add transport layer security for production deployment
-
 Include more details about the cryptographic architecture in documentation
 
-Overall Assessment
-Group 91 demonstrates strong software development practices with a well-documented, feature-complete chat system. The project shows good understanding of distributed systems with multi-server support. However, the cryptographic terminology confusion needs immediate clarification to ensure proper security implementation. The comprehensive documentation and structured approach suggest a professionally developed system that would benefit from enhanced security transparency.
-
-Recommendation: Good implementation with minor security documentation issues to address.
 
 ## Peer Review: Group 88 - EchoChat Distributed Secure Chat System
 Overview
 Group 88's EchoChat presents a sophisticated distributed chat system with a modern web frontend and robust backend architecture. The project demonstrates strong software engineering practices with comprehensive documentation and a well-structured technology stack.
 
 Strengths
-
 Excellent Architecture: Clean separation of concerns with dedicated servers for WebSocket communication, file handling, and authentication
-
 Modern Technology Stack: Use of Maven, Java 11, JWT authentication, and Vue.js frontend shows contemporary development practices
-
 Comprehensive Documentation: Clear quick-start guide with demo accounts and multiple operation modes (web and CLI)
-
 Security Features: JWT authentication, rate limiting, and SOCP protocol with encryption support
-
 Professional Configuration: Well-structured pom.xml with appropriate dependencies including Bouncy Castle for cryptography
 
 Security Concerns
-
 Weak Demo Passwords: "demo123" passwords for all accounts represent a security risk and poor practice
-
 Debug Endpoint Exposure: /api/debug/users endpoint could leak sensitive user information in production
-
 Large File Uploads: 256MB maximum file size could enable denial-of-service attacks
-
 Missing Transport Security: No mention of TLS/SSL implementation for production deployment
 
 Areas for Improvement
-
 Implement stronger password policies and remove hardcoded demo credentials
-
 Secure or remove debug endpoints in production environments
-
 Add file type validation and virus scanning for uploads
-
 Document encryption implementation details and key management
-
 Consider implementing end-to-end encryption for enhanced privacy
-
-Overall Assessment
-Group 88 has delivered a professionally engineered chat system with excellent architectural design and comprehensive features. The project demonstrates strong understanding of distributed systems and modern web technologies. While the implementation shows good security awareness with JWT and rate limiting, several security hardening measures are needed before production deployment. The clear documentation and dual-mode operation (web + CLI) are particularly commendable.
-
-Recommendation: High-quality implementation with minor security improvements required. The project demonstrates advanced software engineering capabilities suitable for enterprise environments.
-
-
 
 -   Identify: State your name and the group reviewed.
 -   Overview: Brief summary of project purpose and focus areas.
@@ -387,7 +295,6 @@ Peer Review: Sahar Hassan Alzahrani – Group 43 Review
 Peer Review: Mahrin Mahia – Group 101 Review
 Peer Review: Mahrin Mahia – Group 37 Review
 Peer Review: Mahrin Mahia – Group 97 Review
-Peer Review: Maria Hasan Logno – Group 101 Review
-Peer Review: Maria Hasan Logno – Group 43 Review
-Peer Review: Maria Hasan Logno – Group 77 Review
-Peer Review: Maria Hasan Logno – Group 69 Review
+Peer Review: Maria Hasan Logno – Group 91 Review
+Peer Review: Maria Hasan Logno – Group 88 Review
+Peer Review: Maria Hasan Logno – Group 26 Review
