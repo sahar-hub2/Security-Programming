@@ -155,12 +155,14 @@ Such outcomes indicate that even though the two systems are based on the SOCP pr
 
 # Group Contributions
 
--   Debasish Saha Pranta: introducer YAML, server-server, backdoor implementation …
--   Samin Yeasar Seaum: file transfer, cryptographic, backdoor implementation … …
--   Abidul Kabir: server-client protocol flow, socket handling, database persistence…
--   Sahar Alzahrani: Built the initial client-server framework with WebSocket messaging and RSA security; added documentation, testing, secure-version validation, and organized the project.
--   Mahrin Mahia: backdoor design, testing and documentation.
--   Maria Hasan Logno: test case integration, interoperability experiments…
+All members jointly contributed to the system’s design, secure implementation, testing, and documentation.
+•	Debasish Saha Pranta: Led introducer and federation setup; co-developed and tested backdoor scenarios.
+•	Samin Yeasar Seaum: Focused on file transfer and cryptography; co-designed and validated backdoor logic.
+•	Abidul Kabir: Worked on networking and persistence; supported protocol integration and backdoor testing.
+•	Sahar Alzahrani: Developed the client framework, led testing and documentation; coordinated security validation.
+•	Mahrin Mahia: Drove backdoor PoC design and analysis; contributed mitigation and ethical safeguards.
+•	Maria Hasan Logno: Managed integration and interoperability testing; compiled testing evidence and appendices.
+
 
 # Conclusion
 
@@ -179,7 +181,57 @@ We learned the value of strict protocol discipline and the need to maintain clea
 6.  Maria Hasan Logno (a1975478, mariahasan.logno@student.adelaide.edu.au)
 
 # Appendix
+Appendix 
+Appendix A — Backdoor Design and Exploitation (PoC):
+Conceptual exploit steps: This should be reproduced only in an isolated lab environment.
+A. Weak Key Registration
+1.	Configure a test server instance using the backdoored_version/ server (enable backdoor or run the PoC according to the quarantine notes). 
+2.	Use a client that generates a weak RSA key pair (1024-bit in the PoC) and attempt to register/advertise the user key to an introducer or server.
+3.	If accepted, the introducer or servers will include the weak-key advertisement into their registry.
+4.	Attacker extracts the weak public key and (offline) attempts cryptanalysis.
+5.	Observe that servers or clients accept messages signed or encrypted under that weak key as if it were strong.
+B. Unsigned gossip acceptance
+1.	Configure the backdoored server with gossip verification bypass enabled. 
+2.	Craft a USER_ADVERTISE JSON envelope with an arbitrary user_id and public key info, leaving signature fields empty or invalid.
+3.	Send the envelope to one server or the introducer via the gossip endpoint.
+4.	The compromised server accepts the advert and relays it to peers; other servers add the advertised user to their local registries.
+5.	The attacker can now send messages claiming to be the advertised user or observe how servers route traffic for that fake identity.
+More explanations are provided in the BACKDOOR_README.md file.
 
--   Peer review
--   Poc
--   SCOP
+
+
+
+
+
+
+
+
+
+
+
+
+
+Appendix B — Testing Evidence:
+Testing Evidence: See Testing Report
+
+
+Appendix C — Peer Review:
+Peer Review: Debasish Saha Pranta – Group 38 Review
+Peer Review: Debasish Saha Pranta – Group 45 Review
+Peer Review: Debasish Saha Pranta – Group 77 Review
+Peer Review: Samin Yeasar Seaum – Group 43 Review
+Peer Review: Samin Yeasar Seaum – Group 69 Review
+Peer Review: Samin Yeasar Seaum – Group 70 Review
+Peer Review: Abidul Kabir – Group 25 Review
+Peer Review: Abidul Kabir – Group 41 Review
+Peer Review: Abidul Kabir – Group 69 Review
+Peer Review: Sahar Hassan Alzahrani – Group 100 Review
+Peer Review: Sahar Hassan Alzahrani – Group 29 Review
+Peer Review: Sahar Hassan Alzahrani – Group 43 Review
+Peer Review: Mahrin Mahia – Group 101 Review
+Peer Review: Mahrin Mahia – Group 37 Review
+Peer Review: Mahrin Mahia – Group 97 Review
+Peer Review: Maria Hasan Logno – Group _ Review
+Peer Review: Maria Hasan Logno – Group _ Review
+Peer Review: Maria Hasan Logno – Group _ Review
+
