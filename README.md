@@ -85,8 +85,11 @@ Security-Programming/
 │   │   ├── downloads/                       # Folder for downloaded files
 │   │   └── __pycache__/                     # Compiled Python bytecode cache
 │
-│   ├── backdoored_version/                  # Insecure / vulnerable version
-│   │   └── ...                              # Same structure as secure_version but with flaws
+│   ├── backdoored_version/                     # Insecure / vulnerable version
+│   │   ├── quarantine/                         # PoC attack scripts (for testing/hardening)
+│   │   │   ├── poc_inject_unsigned_advert.py   # PoC: send unsigned USER_ADVERTISE to test BACKDOOR_TRUST_GOSSIP
+│   │   │   └── poc_weak_key_register.py        # PoC: register user with intentional 1024-bit RSA key
+│   │   └── ...                                 # Same structure as secure_version but with flaws
 │
 ├── Testing/
 │   ├── test_cases/
