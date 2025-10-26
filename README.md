@@ -61,39 +61,44 @@ Implemented mandatory features include:
 Security-Programming/
 │
 ├── Documentation/
-│   ├── BACKDOOR_README.md             # Details on the intentionally backdoored version
-│   ├── README_SOCP.md                 # Secure Overlay Chat Protocol overview
-│   ├── SCOP.pdf                       # Technical reference - protocol documentation
-│   ├── README.md                      # Main readme file
-│   └── Reflection_Report              # Team reflection and lessons learned
+│   ├── Developer Setup Guide (Phase 2).md   # Archived: Secure Overlay Chat Protocol overview
+│   ├── SCOP.pdf                             # Standard protocol agreement / reference document
+│   └── Reflection_Report/                   # Team reflection and lessons learned
+│      ├── Reflective Commentary.pdf         # General reflection: protocols, AI used, testing, peer review, member contributions
+│      └── Appendix/                         # Supporting documents
+│         ├── BACKDOOR_README(PoC).md
+│         ├── Peer_Review/                   # Holding for both received and given peer reviews
+│         └── Testing Report.pdf             # Testing approach and evidence
 │
 ├── Implementation/
-│   ├── backdoored_version/            # Insecure / vulnerable version for comparison
-│   │   └── ...                        # Same structure as secure_version but with flaws
-│   │
-│   ├── secure_version/                # Secure implementation (production-ready)
-│   │   ├── client.py                  # Client application (connects to server)
-│   │   ├── server.py                  # Main server program handling connections
-│   │   ├── keys.py                    # Key generation and management logic
-│   │   ├── datavault.py               # Local encrypted data storage and retrieval
-│   │   ├── gen_introducer_keys.py     # Utility to generate introducer (server) keys
-│   │   ├── introducers.yaml           # Introducer list (server discovery info)
-│   │   ├── requirements.txt           # Python dependencies for this version
-│   │   ├── data_vault.sqlite          # SQLite database file
-│   │   ├── data_vault.sqlite-shm      # SQLite shared memory file
-│   │   ├── data_vault.sqlite-wal      # SQLite write-ahead log
-│   │   ├── downloads/                 # Folder for downloaded files
-│   │   └── __pycache__/               # Compiled Python bytecode cache
+│   ├── secure_version/                      # Secure implementation (production-ready)
+│   │   ├── client.py                        # Client application (connects to server)
+│   │   ├── server.py                        # Main server program handling connections
+│   │   ├── keys.py                          # Key generation and management logic
+│   │   ├── datavault.py                     # Local encrypted data storage and retrieval
+│   │   ├── gen_introducer_keys.py           # Utility to generate introducer (server) keys
+│   │   ├── introducers.yaml                 # Introducer list (server discovery info)
+│   │   ├── requirements.txt                 # Python dependencies
+│   │   ├── data_vault.sqlite                # SQLite database file
+│   │   ├── data_vault.sqlite-shm            # SQLite shared memory file
+│   │   ├── data_vault.sqlite-wal            # SQLite write-ahead log
+│   │   ├── downloads/                       # Folder for downloaded files
+│   │   └── __pycache__/                     # Compiled Python bytecode cache
+│
+│   ├── backdoored_version/                  # Insecure / vulnerable version
+│   │   └── ...                              # Same structure as secure_version but with flaws
 │
 ├── Testing/
 │   ├── test_cases/
-│   │   ├── test_client.py             # Tests for client-side behavior
-│   │   ├── test_server.py             # Tests for server-side operations
-│   │   ├── test_keys.py               # Tests for key handling and persistence
-│   │   ├── test_integration.py        # Full integration tests (end-to-end)
-│   │   └── __pycache__/               # Cached test bytecode
+│   │   ├── test_client.py                   # Tests for client-side behavior
+│   │   ├── test_server.py                   # Tests for server-side operations
+│   │   ├── test_keys.py                     # Tests for key handling and persistence
+│   │   ├── test_integration.py              # Full integration tests (end-to-end)
+│   │   ├── test_security_hardening.py       # Security hardening tests for secure_version
+│   │   └── __pycache__/                     # Cached test bytecode
 │
-└── README.md                          # Entry point (this file)
+└── README.md                                # Entry point (this file)
+
 
 ```
 # ⚙️ Setup & Installation
@@ -217,8 +222,8 @@ Supported commands: /tell, /all, /list, /sendfile, /quit
 | `Address already in use`    | Port conflict                    | Change `--port` argument                        |
 | `cryptography build failed` | Missing system headers           | macOS: `brew install openssl` → re-install deps |
 | `Connection refused`        | Server not started or wrong port | Verify introducer + server ports match          |
-| UnicodeDecodeError          | Non-UTF8 payload                 | Delete old keys and restart                     |
-| “No active users” shown     | Introducer not reachable         | Ensure introducer is running first              |
+| `UnicodeDecodeError `         | Non-UTF8 payload                 | Delete old keys and restart                     |
+| `“No active users”` shown     | Introducer not reachable         | Ensure introducer is running first              |
 
 
 ## Testing
@@ -231,10 +236,7 @@ From the root directory:
 ```bash
 pytest -v
 ```
-or Run a Specific Test File If you want to test only one component for example:
-```bash
-pytest -v Testing/test_cases/test_client.py
-```
+**Note:** Ensure that all required dependencies and environment variables are properly set up before running the tests.
 
 ## Backdoor Disclaimer
 The `backdoored_version/` directory is provided for educational and testing purposes only.</br>
