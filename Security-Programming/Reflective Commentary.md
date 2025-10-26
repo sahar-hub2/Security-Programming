@@ -125,6 +125,51 @@ Overall, these reviews deepened understanding of cross-language security enforce
 
 Engaging with diverse codebases across Python and C++ implementations highlighted how each language’s security posture depends on disciplined design, testing, and documentation. This review process strengthened the understanding of secure protocol design, emphasizing that even well-structured systems can conceal subtle weaknesses in trust models, key management, and exception handling.
 
+### Maria Hasan Logno
+Maria Hasan Logno (a1975478) has provided the feedback peer review to the following groups 43, 101, 69, 77.
+
+#### Overview Group 69
+Group 69’s project presented a sophisticated node-based Secure Overlay Chat System, featuring a multi-server architecture integrated with a SQLite database for persistence. The implementation demonstrated a clear ambition to create a scalable and feature-rich communication platform.
+
+#### Strengths
+The system's primary strength lay in its well-conceived modular design, which cleanly separated concerns such as networking, cryptography, and data persistence. The use of a structured database for managing user and message state is a commendable approach for a production-ready system, promoting data integrity and complex querying capabilities. The codebase exhibited a coherent style, indicating a disciplined development process.
+
+#### Weaknesses
+The review, utilizing Pylint, Bandit, and manual code tracing, identified several critical security flaws. The most severe was the use of unencrypted WebSocket (ws://) connections, exposing all traffic to eavesdropping. Furthermore, the system accepted RSA keys weaker than the SOCP-mandated 4096-bit standard, fundamentally undermining cryptographic security. A particularly subtle vulnerability was the silent failure of signature verification, creating a false sense of security by failing closed without alerting users. The database layer was also found to be at risk due to the use of dynamic SQL query construction via f-strings, creating a clear SQL injection pathway.
+
+#### Recommendations
+It is strongly recommended to immediately migrate all WebSocket connections to the encrypted wss:// protocol, enforced with TLS. Key management must be hardened by implementing strict RSA-4096 validation at registration. The signature verification logic should be refactored to fail conspicuously, and all database interactions must be secured using parameterized queries to eliminate SQL injection risks.
+
+#### Overview Group 77
+Group 77 developed a Secure Chat System that exhibited a strong command of cryptographic principles and a well-architected modular design. The implementation successfully incorporated advanced features such as replay protection and efficient, chunk-based file transfers.
+
+#### Strengths
+The project's most significant strength was its exemplary cryptographic hygiene, correctly implementing RSA-OAEP for encryption and RSA-PSS for signatures. The inclusion of replay protection mechanisms demonstrated a forward-thinking approach to security. The file transfer system, designed to handle data in chunks, and the use of structured logging were both highly commendable features that enhanced the system's robustness and debuggability.
+
+#### Weaknesses
+Manual analysis of the federation logic revealed a critical trust issue: the system accepted introducer broadcasts without authentication, allowing a malicious actor to spoof the introducer and poison the server network. This was compounded by weak inter-server authentication. Furthermore, the logging mechanism, while structured, was found to record sensitive key material and identifiers. The file transfer feature also lacked rate-limiting, presenting a potential vector for resource exhaustion Denial-of-Service (DoS) attacks.
+
+#### Recommendations
+To secure the federation layer, the introducer must be cryptographically authenticated, and all inter-server messages should be mutually signed and verified. Logging must be sanitized to systematically exclude all sensitive cryptographic material. Finally, implementing rate-limiting on file transfer requests is essential to mitigate DoS attacks and ensure system stability.
+
+#### Group 43 Review
+
+The project by Group 43 demonstrated a clear understanding of the SOCP specification, with a codebase that emphasized maintainability and protocol compliance. The architecture was logically structured, facilitating a straightforward analysis of its communication flows and security posture.
+
+The primary strengths identified were a coherent code style and a modular design that correctly implemented the core messaging framework. However, the review revealed two critical, intentionally placed educational backdoors. The first involved the acceptance of weak RSA keys during user registration, which subverts the mandated RSA-4096 policy and exposes the system to offline cryptanalysis. The second was the conditional acceptance of unsigned USER_ADVERTISE gossip messages, which could allow an attacker to poison the federated user directory and enable impersonation attacks. These vulnerabilities were subtle, as the system's external protocol behaviour appeared normal, underscoring the importance of rigorous internal validation checks.
+
+To bolster security, recommendations included enforcing strict RSA-4096 validation at all key registration points, implementing fail-closed logic for all signature verifications on gossip frames, and improving exception handling to prevent the silent failure of security-critical operations.
+
+#### Group 101 Review
+
+Group 101’s Python-based implementation was notably robust in its core cryptographic functions, correctly applying end-to-end encryption and message signing. The project included well-documented proof-of-concept exploits that effectively demonstrated its intentional backdoors, serving a clear educational purpose.
+
+The system's strengths were its functional encryption layer and the insightful inclusion of vulnerabilities such as weak RSA key acceptance, routing poisoning, and replay attacks. Static analysis with Pylint (7.94/10) and Bandit (which showed low risk after exclusions) corroborated generally sound code quality, with minor operational weaknesses including overuse of broad exception handlers and reliance on global state. A ConnectionClosedOK event observed during testing was noted as a minor runtime robustness issue rather than a security flaw.
+
+The key areas for improvement centre on mitigating the demonstrated backdoors. Recommendations included implementing a robust key-strength policy, adding sequence numbers or nonces to messages to prevent replay attacks, introducing integrity checks for file transfers, and refining the input validation and error-handling mechanisms to enhance the system's overall resilience.
+
+#### Conclusion
+Both groups successfully created functional and educational implementations of SOCP. The review process highlighted how subtle logical flaws can critically undermine strong cryptographic primitives and emphasized the necessity of comprehensive security testing that goes beyond static analysis to include manual logic review and dynamic exploit validation.
 
 -   Identify: State your name and the group reviewed.
 -   Overview: Brief summary of project purpose and focus areas.
@@ -231,7 +276,7 @@ Peer Review: Sahar Hassan Alzahrani – Group 43 Review
 Peer Review: Mahrin Mahia – Group 101 Review
 Peer Review: Mahrin Mahia – Group 37 Review
 Peer Review: Mahrin Mahia – Group 97 Review
-Peer Review: Maria Hasan Logno – Group _ Review
-Peer Review: Maria Hasan Logno – Group _ Review
-Peer Review: Maria Hasan Logno – Group _ Review
-
+Peer Review: Maria Hasan Logno – Group 101 Review
+Peer Review: Maria Hasan Logno – Group 43 Review
+Peer Review: Maria Hasan Logno – Group 77 Review
+Peer Review: Maria Hasan Logno – Group 69 Review
