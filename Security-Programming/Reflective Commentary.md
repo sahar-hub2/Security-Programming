@@ -38,14 +38,13 @@ Trade-offs include higher computational overhead from RSA-only encryption, limit
 
 ## Evaluation of Received Feedback
 
-- All reviewing group successfully detected the two intentional backdoors - BACKDOOR_WEAK_KEYS (RSA-1024 key downgrade) and BACKDOOR_TRUST_GOSSIP (unsigned gossip acceptance). Reviewers demonstrated these through the included PoC scripts poc_weak_key_register.py and poc_inject_unsigned_advert.py, verifying that the backdoors allowed weak key generation and unsigned inter-server messages, leading to potential impersonation or data compromise. Several groups clearly described how environment variables gated these vulnerabilities and rated both as critical. They confirmed the educational intent was well-documented through BACKDOOR_README.md. 
+All reviewing group successfully detected the two intentional backdoors - BACKDOOR_WEAK_KEYS (RSA-1024 key downgrade) and BACKDOOR_TRUST_GOSSIP (unsigned gossip acceptance). Reviewers demonstrated these through the included PoC scripts poc_weak_key_register.py and poc_inject_unsigned_advert.py, verifying that the backdoors allowed weak key generation and unsigned inter-server messages, leading to potential impersonation or data compromise. Several groups clearly described how environment variables gated these vulnerabilities and rated both as critical. They confirmed the educational intent was well-documented through BACKDOOR_README.md. 
 
 Reviewers also reported some additional weaknesses:
-•	SQL Injection risks through f-string–based queries in datavault.py.
-•	Weak password hashing (SHA-256 + salt only) and the presence of hardcoded default credentials
-.
-•	Repository hygiene issues, such as committed .keys/ and data_vault.sqlite files, exposing sensitive data
-•	Code-quality concerns, including missing docstrings, long functions, and import disorganization.
+    •	SQL Injection risks through f-string–based queries in datavault.py.
+    •	Weak password hashing (SHA-256 + salt only) and the presence of hardcoded default credentials.
+    •	Repository hygiene issues, such as committed .keys/ and data_vault.sqlite files, exposing sensitive data.
+    •  	Code-quality concerns, including missing docstrings, long functions, and import disorganization.
 Several reviewers went further and supplied fix examples, such as validate_key_size() checks, PBKDF2 password hashing, and structured exception logging.
 The feedback was clear, specific, and actionable. All teams explained how to reproduce the vulnerabilities and offered direct remediation code. Their combined use of Bandit, Semgrep, and manual inspection revealed a valuable comparison: static tools failed to detect the intentional logic-level flaws, whereas manual reasoning achieved full success.
 The reviewers’ suggestions directly influenced the secure rebuild: environment-variable gates were removed, RSA 4096-bit enforcement was added, PBKDF2 password hashing implemented, and .gitignore updated to exclude secret artifacts.
@@ -119,7 +118,7 @@ Reflection:
 These reviews enhanced my practical skills in conducting secure-coding analysis, cryptographic enforcement, and positive feedback. It helped me to be more critical and supportive at the same time and to present technical findings in a clear and professional way, which is important in both collaboration and software development and in the actual cybersecurity evaluation.
 
 ### Mahrin Alam Mahia
-The following feedback was provided by Mahrin Alam Mahia (a1957342) to Groups 37, 101, and 97 on their Secure Overlay Chat Protocol projects.
+The following feedback was provided by Mahrin Alam Mahia (a1957342) to Groups 37, 101, and 97 on their Secure Overlay Chat System projects.
 
 For Group 37, the review emphasized a well-functioning asynchronous chat overlay with correct RSA-OAEP and PSS usage, yet identified unsigned inter-server messages, auto-trust in Zeroconf discovery, and weak enforcement of key-import policies as major risks. Pylint (8.47/10) and Bandit scans confirmed overall good code quality after formatting, with earlier high counts traced to third-party dependencies.
 
@@ -170,9 +169,9 @@ Such outcomes indicate that even though the two systems are based on the SOCP pr
 
 # Conclusion
 
--   Summarize the overall growth: from implementing a secure system to realizing how human error undermines security.
--   Emphasize learning outcomes: protocol discipline, ethical coding, cryptographic transparency.
--   Connect to the cybersecurity skill shortage: real-world demand for developers who understand both the defensive and offensive sides of secure software.
+Working on the Secure Overlay Chat Protocol (SOCP) was a genuine learning curve that took us from simply building a working encrypted system to realising how easily human error can weaken even the strongest designs. By intentionally adding backdoors and later reviewing them through peer feedback, we saw how small lapses like a skipped validation, a misplaced check, or an unchecked configuration can quietly undermine the security we thought was airtight.
+We learned the value of strict protocol discipline and the need to maintain clear trust boundaries between servers, clients, and introducers. It also reinforced the importance of writing code ethically; being transparent, documenting decisions, and isolating any vulnerabilities for safe testing. Building and analysing SOCP gave us hands-on experience with cryptographic integrity, where every signature and key exchange must be open to verification and accountability. Moreover, working on both secure and deliberately flawed versions of SOCP helped us develop that balanced perspective.
+
 
 # Group 12:
 
