@@ -28,7 +28,8 @@ Trade-offs include higher computational overhead from RSA-only encryption, limit
        Rationale: Purpose is to demonstrate how a small logic change (bypassing one verification condition) can defeat an otherwise robust signature-based security model. The aim is to help reviewers see how trust assumptions in the gossip flow are fragile when signature verification is not enforced end-to-end.
        How it’s subtle and plausible: The gossip pipeline still uses the same JSON envelope format and signature fields; only the signature verification gate is bypassed under an internal flag. Reviewers may see normal envelope shapes and assume signature checks are present if they don't inspect the verification branch. Because messages continue to flow correctly, the issue is easily overlooked during functional testing.
        Impact: An injected unsigned advert can be propagated across servers, enabling attacker-controlled identities to be trusted and used for impersonation or message routing attacks.
-       Evidence: poc_inject_unsigned_advert.py demonstrates how a crafted unsigned advert can be injected and propagated when the backdoor flag is active
+       Evidence: poc_inject_unsigned_advert.py demonstrates how a crafted unsigned advert can be injected and propagated when the backdoor flag is active.
+
        Detection and Mitigation
        • (Weak-key acceptance) Enforce cryptographic policy centrally (reject keys < RSA-3072 at import/generation; fail CI on violation). Mitigation can be done by removing runtime flags that short-circuit verification; make any debug bypass compile-time and blocked from production.
        • (Unsigned gossip acceptance) Centralize signature verification into an auditable function and add unit/property tests that assert every relayed advert passed verification. By adding CI regression tests (unsigned/invalid adverts, sub-policy keys) and log verification anomalies, this issue can be mitigated.
@@ -135,12 +136,11 @@ Full individual reports and evidence are attached in the Appendix.
 
 # Reflection on AI Use
 
-Critically evaluate your use of AI (e.g., ChatGPT) for documentation, debugging, and explanation:
+During this project, we used AI tools such as ChatGPT mainly to help with documentation, debugging, and clarifying concepts around encryption and network protocols. It was especially useful for explaining technical ideas in simpler terms, identifying coding errors, and suggesting ways to structure functions more clearly. Having quick, well-organised guidance made it easier to stay productive and maintain consistency across the project.
 
--   Strengths: code organization, error interpretation, concept clarification.
--   Limitations: lack of context for dynamic runtime issues, occasional hallucinations about function names or parameters.
--   Reflect ethically: how AI accelerated understanding but required human verification for cryptographic correctness.
--   End with insight: AI is a valuable teaching assistant, not an oracle — it reinforces critical reading of generated code.
+At the same time, we learned that AI has its own limits. It sometimes gave suggestions that didn’t fit the project’s context or referred to functions that didn’t exist. In areas like asynchronous communication and cryptography, we found that relying purely on AI outputs could be risky. Every recommendation needed careful testing and review to ensure it was correct and secure.
+
+From an ethical perspective, we used AI responsibly, treating it as a learning and drafting aid, not as a replacement for our own work. It helped us learn faster, but human oversight remained essential. Overall, using AI felt like having a knowledgeable assistant; helpful for brainstorming and explanation, but never a substitute for real understanding. This experience reminded us that in Secure software development, critical thinking and verification are just as important as technical skill.
 
 # Reflection on testing
 
@@ -159,7 +159,7 @@ Such outcomes indicate that even though the two systems are based on the SOCP pr
 -   Samin Yeasar Seaum: file transfer, cryptographic, backdoor implementation … …
 -   Abidul Kabir: server-client protocol flow, socket handling, database persistence…
 -   Sahar Alzahrani: Built the initial client-server framework with WebSocket messaging and RSA security; added documentation, testing, secure-version validation, and organized the project.
--   Mahrin Mahia: backdoor design and testing…
+-   Mahrin Mahia: backdoor design, testing and documentation.
 -   Maria Hasan Logno: test case integration, interoperability experiments…
 
 # Conclusion
