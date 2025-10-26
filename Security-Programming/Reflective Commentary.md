@@ -126,50 +126,161 @@ Overall, these reviews deepened understanding of cross-language security enforce
 Engaging with diverse codebases across Python and C++ implementations highlighted how each language’s security posture depends on disciplined design, testing, and documentation. This review process strengthened the understanding of secure protocol design, emphasizing that even well-structured systems can conceal subtle weaknesses in trust models, key management, and exception handling.
 
 ### Maria Hasan Logno
-Maria Hasan Logno (a1975478) has provided the feedback peer review to the following groups 43, 101, 69, 77.
+Maria Hasan Logno (a1975478) has provided the feedback peer review to the following groups 26, 88 and 91.
 
-#### Overview Group 69
-Group 69’s project presented a sophisticated node-based Secure Overlay Chat System, featuring a multi-server architecture integrated with a SQLite database for persistence. The implementation demonstrated a clear ambition to create a scalable and feature-rich communication platform.
+## Peer Review: Group 26 - Realtime Chat System (WebSocket + RSA/AES)
+Overview
+Group 26 has developed a real-time chat system using WebSocket with claimed RSA/AES encryption. The system supports user authentication, private/group messaging, file transfer, and online user listing. However, the implementation exhibits significant security vulnerabilities and architectural weaknesses that fundamentally undermine its security posture.
+Strengths
+•	Clear documentation and setup instructions in README files
+•	Well-structured protocol definition in protocol.json
+•	Comprehensive feature set including file transfer and group messaging
+•	Proper use of asynchronous programming with asyncio and websockets
+•	Implementation of heartbeat mechanism for connection monitoring
+Critical Security Weaknesses
+1.	Missing Encryption Implementation
+o	Despite claims of "RSA + AES encryption," the code contains no cryptographic implementation
+o	All messages are transmitted in plaintext over unencrypted WebSocket (ws://)
+o	No key generation, encryption, or decryption logic present in server code
+2.	Hardcoded Security Bypass (Backdoor)
+python
+async def route_to_user(self, target_u, frame, originate_user=None, original_frame=None):
+    if target_u=="admin":  # Hardcoded backdoor - blocks messages to 'admin'
+         return
+o	Deliberate message blocking for user "admin" constitutes an intentional backdoor
+o	No legitimate reason for this hardcoded exception
+3.	Insecure Network Configuration
+o	Server binds to all interfaces (0.0.0.0) without authentication
+o	Uses unencrypted WebSocket (ws://) instead of secure WebSocket (wss://)
+o	No transport layer security (TLS/SSL) implementation
+4.	Authentication and Authorization Flaws
+o	No password authentication - users can claim any username
+o	No signature verification for messages
+o	Missing access control mechanisms
+5.	Code Quality Issues
+o	Dead code in _broadcast_local_user_message method (unreachable code after return)
+o	Inconsistent error handling
+o	Missing input validation and sanitization
+o	No protection against injection attacks
+Tools Used for Analysis
+•	Static Analysis: Manual code review, Pylint (not run but evident code structure issues)
+•	Dynamic Analysis: Protocol analysis, security control assessment
+•	Manual Review: Cryptographic implementation verification, architectural assessment
+Critical Vulnerabilities Identified
+1.	CWE-798: Use of Hard-coded Credentials (admin backdoor)
+2.	CWE-319: Cleartext Transmission of Sensitive Information
+3.	CWE-306: Missing Authentication for Critical Function
+4.	CWE-327: Use of a Broken or Risky Cryptographic Algorithm (none implemented)
+5.	CWE-732: Incorrect Permission Assignment for Critical Resource
+Recommendations
+1.	Immediate Critical Fixes
+o	Remove the hardcoded admin bypass in route_to_user method
+o	Implement proper RSA/AES encryption as claimed in documentation
+o	Add TLS/SSL support for WebSocket connections (wss://)
+o	Implement proper user authentication with passwords or certificates
+2.	Security Enhancements
+o	Add message signing and verification
+o	Implement proper key management system
+o	Add input validation and output encoding
+o	Implement rate limiting and DoS protection
+3.	Code Quality Improvements
+o	Remove dead code and fix logical errors
+o	Add comprehensive error handling
+o	Implement proper logging (without sensitive data)
+o	Add unit tests and security testing
+Conclusion
+While Group 26 has created a functional chat system with good documentation, the implementation fails to deliver on its security promises. The presence of intentional backdoors, missing encryption, and fundamental security flaws makes this system unsuitable for any production or secure communication purposes. The discrepancy between documented security features and actual implementation is particularly concerning.
+Priority: Critical - Requires complete security overhaul before any deployment consideration.
 
-#### Strengths
-The system's primary strength lay in its well-conceived modular design, which cleanly separated concerns such as networking, cryptography, and data persistence. The use of a structured database for managing user and message state is a commendable approach for a production-ready system, promoting data integrity and complex querying capabilities. The codebase exhibited a coherent style, indicating a disciplined development process.
+## Peer Review: Group 91 - Secure Programming UG-91 Chat System
+Overview
+Group 91 has developed a comprehensive WebSocket-based chat system with multiple security features and a well-structured project architecture. The implementation demonstrates good software engineering practices with proper documentation, dependency management, and database integration.
 
-#### Weaknesses
-The review, utilizing Pylint, Bandit, and manual code tracing, identified several critical security flaws. The most severe was the use of unencrypted WebSocket (ws://) connections, exposing all traffic to eavesdropping. Furthermore, the system accepted RSA keys weaker than the SOCP-mandated 4096-bit standard, fundamentally undermining cryptographic security. A particularly subtle vulnerability was the silent failure of signature verification, creating a false sense of security by failing closed without alerting users. The database layer was also found to be at risk due to the use of dynamic SQL query construction via f-strings, creating a clear SQL injection pathway.
+Strengths
 
-#### Recommendations
-It is strongly recommended to immediately migrate all WebSocket connections to the encrypted wss:// protocol, enforced with TLS. Key management must be hardened by implementing strict RSA-4096 validation at registration. The signature verification logic should be refactored to fail conspicuously, and all database interactions must be secured using parameterized queries to eliminate SQL injection risks.
+Excellent documentation with clear setup instructions and troubleshooting guidance
 
-#### Overview Group 77
-Group 77 developed a Secure Chat System that exhibited a strong command of cryptographic principles and a well-architected modular design. The implementation successfully incorporated advanced features such as replay protection and efficient, chunk-based file transfers.
+Proper use of requirements.txt for dependency management
 
-#### Strengths
-The project's most significant strength was its exemplary cryptographic hygiene, correctly implementing RSA-OAEP for encryption and RSA-PSS for signatures. The inclusion of replay protection mechanisms demonstrated a forward-thinking approach to security. The file transfer system, designed to handle data in chunks, and the use of structured logging were both highly commendable features that enhanced the system's robustness and debuggability.
+Comprehensive feature set including file transfer and multiple messaging types
 
-#### Weaknesses
-Manual analysis of the federation logic revealed a critical trust issue: the system accepted introducer broadcasts without authentication, allowing a malicious actor to spoof the introducer and poison the server network. This was compounded by weak inter-server authentication. Furthermore, the logging mechanism, while structured, was found to record sensitive key material and identifiers. The file transfer feature also lacked rate-limiting, presenting a potential vector for resource exhaustion Denial-of-Service (DoS) attacks.
+Database integration with SQLite and proper initialization scripts
 
-#### Recommendations
-To secure the federation layer, the introducer must be cryptographically authenticated, and all inter-server messages should be mutually signed and verified. Logging must be sanitized to systematically exclude all sensitive cryptographic material. Finally, implementing rate-limiting on file transfer requests is essential to mitigate DoS attacks and ensure system stability.
+Support for multiple server instances with configuration files
 
-#### Group 43 Review
+Implementation of user authentication with password requirements
 
-The project by Group 43 demonstrated a clear understanding of the SOCP specification, with a codebase that emphasized maintainability and protocol compliance. The architecture was logically structured, facilitating a straightforward analysis of its communication flows and security posture.
+Good project structure with separate server/client modules
 
-The primary strengths identified were a coherent code style and a modular design that correctly implemented the core messaging framework. However, the review revealed two critical, intentionally placed educational backdoors. The first involved the acceptance of weak RSA keys during user registration, which subverts the mandated RSA-4096 policy and exposes the system to offline cryptanalysis. The second was the conditional acceptance of unsigned USER_ADVERTISE gossip messages, which could allow an attacker to poison the federated user directory and enable impersonation attacks. These vulnerabilities were subtle, as the system's external protocol behaviour appeared normal, underscoring the importance of rigorous internal validation checks.
+Security Concerns
 
-To bolster security, recommendations included enforcing strict RSA-4096 validation at all key registration points, implementing fail-closed logic for all signature verifications on gossip frames, and improving exception handling to prevent the silent failure of security-critical operations.
+Critical: README incorrectly states "Message encryption using SHA256" - SHA256 is a hashing algorithm, not encryption. This fundamental misunderstanding raises concerns about cryptographic implementation.
 
-#### Group 101 Review
+Missing details on actual encryption methodology for message security
 
-Group 101’s Python-based implementation was notably robust in its core cryptographic functions, correctly applying end-to-end encryption and message signing. The project included well-documented proof-of-concept exploits that effectively demonstrated its intentional backdoors, serving a clear educational purpose.
+Database initialization process could benefit from automated scripts rather than manual SQLite commands
 
-The system's strengths were its functional encryption layer and the insightful inclusion of vulnerabilities such as weak RSA key acceptance, routing poisoning, and replay attacks. Static analysis with Pylint (7.94/10) and Bandit (which showed low risk after exclusions) corroborated generally sound code quality, with minor operational weaknesses including overuse of broad exception handlers and reliance on global state. A ConnectionClosedOK event observed during testing was noted as a minor runtime robustness issue rather than a security flaw.
+No mention of transport security (TLS/SSL) for WebSocket connections
 
-The key areas for improvement centre on mitigating the demonstrated backdoors. Recommendations included implementing a robust key-strength policy, adding sequence numbers or nonces to messages to prevent replay attacks, introducing integrity checks for file transfers, and refining the input validation and error-handling mechanisms to enhance the system's overall resilience.
+Areas for Improvement
 
-#### Conclusion
-Both groups successfully created functional and educational implementations of SOCP. The review process highlighted how subtle logical flaws can critically undermine strong cryptographic primitives and emphasized the necessity of comprehensive security testing that goes beyond static analysis to include manual logic review and dynamic exploit validation.
+Clarify the actual encryption approach used for message security
+
+Consider implementing automated database setup scripts
+
+Add transport layer security for production deployment
+
+Include more details about the cryptographic architecture in documentation
+
+Overall Assessment
+Group 91 demonstrates strong software development practices with a well-documented, feature-complete chat system. The project shows good understanding of distributed systems with multi-server support. However, the cryptographic terminology confusion needs immediate clarification to ensure proper security implementation. The comprehensive documentation and structured approach suggest a professionally developed system that would benefit from enhanced security transparency.
+
+Recommendation: Good implementation with minor security documentation issues to address.
+
+## Peer Review: Group 88 - EchoChat Distributed Secure Chat System
+Overview
+Group 88's EchoChat presents a sophisticated distributed chat system with a modern web frontend and robust backend architecture. The project demonstrates strong software engineering practices with comprehensive documentation and a well-structured technology stack.
+
+Strengths
+
+Excellent Architecture: Clean separation of concerns with dedicated servers for WebSocket communication, file handling, and authentication
+
+Modern Technology Stack: Use of Maven, Java 11, JWT authentication, and Vue.js frontend shows contemporary development practices
+
+Comprehensive Documentation: Clear quick-start guide with demo accounts and multiple operation modes (web and CLI)
+
+Security Features: JWT authentication, rate limiting, and SOCP protocol with encryption support
+
+Professional Configuration: Well-structured pom.xml with appropriate dependencies including Bouncy Castle for cryptography
+
+Security Concerns
+
+Weak Demo Passwords: "demo123" passwords for all accounts represent a security risk and poor practice
+
+Debug Endpoint Exposure: /api/debug/users endpoint could leak sensitive user information in production
+
+Large File Uploads: 256MB maximum file size could enable denial-of-service attacks
+
+Missing Transport Security: No mention of TLS/SSL implementation for production deployment
+
+Areas for Improvement
+
+Implement stronger password policies and remove hardcoded demo credentials
+
+Secure or remove debug endpoints in production environments
+
+Add file type validation and virus scanning for uploads
+
+Document encryption implementation details and key management
+
+Consider implementing end-to-end encryption for enhanced privacy
+
+Overall Assessment
+Group 88 has delivered a professionally engineered chat system with excellent architectural design and comprehensive features. The project demonstrates strong understanding of distributed systems and modern web technologies. While the implementation shows good security awareness with JWT and rate limiting, several security hardening measures are needed before production deployment. The clear documentation and dual-mode operation (web + CLI) are particularly commendable.
+
+Recommendation: High-quality implementation with minor security improvements required. The project demonstrates advanced software engineering capabilities suitable for enterprise environments.
+
+
 
 -   Identify: State your name and the group reviewed.
 -   Overview: Brief summary of project purpose and focus areas.
